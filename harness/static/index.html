@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sora</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="dot"></span>sora</div>
+    <nav id="tabs">
+      <button data-tab="chat" class="active">Chat</button>
+      <button data-tab="traces">Traces</button>
+      <button data-tab="memory">Memory</button>
+      <button data-tab="evals">Evals</button>
+      <button data-tab="tools">Tools</button>
+    </nav>
+    <div class="model" id="model"></div>
+  </header>
+
+  <main>
+    <!-- Chat -->
+    <section id="chat" class="tab active">
+      <aside class="sessions">
+        <button id="new-chat" class="primary">+ New chat</button>
+        <ul id="session-list"></ul>
+      </aside>
+      <div class="conversation">
+        <div id="messages" class="messages">
+          <div class="empty" id="empty-chat">
+            <h2>Ask sora anything</h2>
+            <p>It remembers across chats, uses tools and the web, and learns from 👎.</p>
+          </div>
+        </div>
+        <form id="composer">
+          <textarea id="input" rows="1" placeholder="Message sora…  (Enter to send, Shift+Enter for a new line)"></textarea>
+          <button type="submit" class="primary" id="send">Send</button>
+        </form>
+      </div>
+      <aside class="live">
+        <h3>This turn</h3>
+        <ol id="live-steps"><li class="muted">Steps appear here as sora works.</li></ol>
+        <div id="live-summary" class="summary"></div>
+      </aside>
+    </section>
+
+    <!-- Traces -->
+    <section id="traces" class="tab">
+      <div class="cards" id="stat-cards"></div>
+      <div class="split">
+        <div class="list-pane">
+          <div class="toolbar">
+            <select id="trace-source">
+              <option value="">All sources</option><option value="chat">Chat</option>
+              <option value="cli">Terminal</option><option value="eval">Evals</option>
+            </select>
+            <select id="trace-status">
+              <option value="">Any status</option><option value="ok">ok</option>
+              <option value="error">error</option><option value="limit">limit</option>
+              <option value="refused">refused</option>
+            </select>
+            <a class="button" href="/api/export" download>Export JSONL</a>
+          </div>
+          <table class="grid"><thead><tr>
+            <th>When</th><th>Message</th><th>Status</th><th class="num">Time</th><th class="num">Cost</th><th>Rated</th>
+          </tr></thead><tbody id="trace-rows"></tbody></table>
+        </div>
+        <div class="detail-pane" id="trace-detail"><p class="muted">Pick a turn to see its steps.</p></div>
+      </div>
+    </section>
+
+    <!-- Memory -->
+    <section id="memory" class="tab">
+      <div class="columns">
+        <div class="panel"><h3>Facts <small>semantic</small></h3><ul id="facts" class="rows"></ul></div>
+        <div class="panel"><h3>Episodes <small>episodic</small></h3><ul id="episodes" class="rows"></ul></div>
+        <div class="panel"><h3>Lessons <small>learned from mistakes</small></h3><ul id="lessons" class="rows"></ul></div>
+        <div class="panel"><h3>Skills <small>procedures</small></h3><ul id="skills" class="rows"></ul></div>
+      </div>
+    </section>
+
+    <!-- Evals -->
+    <section id="evals" class="tab">
+      <div class="split">
+        <div class="list-pane">
+          <h3>Datasets</h3>
+          <ul id="datasets" class="rows"></ul>
+          <h3>Runs</h3>
+          <table class="grid"><thead><tr>
+            <th>When</th><th>Dataset</th><th class="num">Passed</th><th class="num">Cost</th>
+          </tr></thead><tbody id="run-rows"></tbody></table>
+        </div>
+        <div class="detail-pane" id="run-detail"><p class="muted">Pick a run to see each case.</p></div>
+      </div>
+    </section>
+
+    <!-- Tools -->
+    <section id="tools" class="tab">
+      <div class="columns two">
+        <div class="panel"><h3>Tools</h3><table class="grid"><thead><tr><th>Name</th><th>Source</th><th>Description</th></tr></thead><tbody id="tool-rows"></tbody></table></div>
+        <div class="panel"><h3>MCP servers</h3><ul id="mcp" class="rows"></ul>
+          <p class="muted small">Add servers in <code>~/.sora/mcp.json</code> (Claude Desktop format), then restart.</p>
+          <h3>Settings</h3><dl id="settings" class="kv"></dl></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

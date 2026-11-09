@@ -129,6 +129,7 @@ class LessonStore:
                 (name, NOTES_PER_TOOL)).fetchall()
             if rows:
                 notes[name] = [r["lesson"] for r in rows]
+                self._used([r["rowid"] for r in rows])
         return notes
 
     def _used(self, ids: list[int]) -> None:

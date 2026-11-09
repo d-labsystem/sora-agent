@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {"name": "sora-dashboard-demo", "runtimeExecutable": "/Users/aryandigwal/Desktop/sora/.venv/bin/python", "runtimeArgs": ["/Users/aryandigwal/Desktop/sora/tests/demo_server.py"], "port": 8790},
+    {"name": "sora", "runtimeExecutable": "/Users/aryandigwal/Desktop/sora/.venv/bin/python", "runtimeArgs": ["/Users/aryandigwal/Desktop/sora/main.py", "serve"], "port": 8765}
+  ]
+}

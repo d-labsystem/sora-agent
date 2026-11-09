@@ -74,6 +74,7 @@ def test_lessons_come_back(lessons):
     assert lessons.relevant("YYYY") == []
     notes = lessons.tool_notes(["calendar__create", "current_time"])
     assert notes == {"calendar__create": ["Pass dates as YYYY-MM-DD"]}
+    assert next(l for l in lessons.list() if l["tool"])["uses"] == 1
     registry = ToolRegistry()
     registry.register(Tool("calendar__create", "Create an event.", {"type": "object"}, lambda: ""))
     description = registry.schemas(notes)[0]["description"]

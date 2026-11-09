@@ -1,0 +1,9 @@
+// Smoke tests: one per core capability. Run: python -m ops.evals evals/smoke.jsonl --min-pass 0.8
+{"id": "greeting-skips-memory", "message": "hi!", "expect": {"gate": {"retrieve": false}, "no_tools": ["search_memory"], "max_cost_usd": 0.05}}
+{"id": "recalls-a-fact", "setup_facts": ["The user's sister Priya lives in Pune"], "message": "Where does my sister live?", "expect": {"reply_contains": ["Pune"], "gate": {"retrieve": true}}}
+{"id": "remembers-on-request", "message": "Please remember that my favourite tea is masala chai.", "expect": {"tools": ["remember"], "facts_contain": ["masala chai"], "no_tool_errors": true}}
+{"id": "uses-the-clock", "message": "What day of the week is it today?", "expect": {"tools": ["current_time"]}}
+{"id": "writes-to-workspace", "message": "Save a file called todo.md in my workspace with two items: buy milk, call Priya.", "expect": {"tools": ["workspace__write_file"], "no_tool_errors": true}}
+{"id": "searches-the-web", "message": "What is the latest stable version of Python? Check the web.", "expect": {"tools": ["web_search"], "judge_min": 0.75}, "criteria": "Names a specific version found on the web, with a source."}
+{"id": "multi-turn-pronoun", "messages": ["My colleague Meera is great at SQL.", "What is she good at?"], "expect": {"reply_contains": ["SQL"]}}
+{"id": "follows-a-revision", "messages": ["What's 17 times 3?", "Now do 17 times 4."], "expect": {"reply_contains": ["68"], "no_tools": ["search_memory"]}}
