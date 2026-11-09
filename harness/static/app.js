@@ -145,7 +145,7 @@ async function send() {
       case "done":
         if (ev.status === "error") { bot.classList.add("error"); body.textContent = ev.error || "Something went wrong."; }
         bot.append(feedbackBar(ev.id));
-        $("#live-summary").append(el("div", {}, `${ev.status} · ${ms(ev.latency_ms)} · ${money(ev.cost_usd)} · ${ev.input_tokens} in / ${ev.output_tokens} out`));
+        $("#live-summary").append(el("div", {}, `${ev.status} · ${ms(ev.latency_ms)} · ${money(ev.cost_usd)} · ${ev.input_tokens} in + ${ev.cache_read_tokens || 0} cached / ${ev.output_tokens} out`));
         break;
     }
   };
@@ -188,6 +188,7 @@ async function loadTraces() {
     ["Turns (7 days)", stats.turns], ["Error rate", (stats.error_rate * 100).toFixed(0) + "%"],
     ["p50 / p95 latency", `${ms(stats.p50_latency_ms)} / ${ms(stats.p95_latency_ms)}`], ["Cost", money(stats.cost_usd)],
     ["Tool calls (errors)", `${stats.tool_calls} (${stats.tool_errors})`], ["Web searches", stats.web_searches],
+    ["Input from cache", (stats.cache_hit_rate * 100).toFixed(0) + "%"],
     ["👍 rate", rated ? Math.round(100 * stats.thumbs_up / rated) + "%" : "–"],
     ["Avg judge score", stats.avg_judge == null ? "–" : stats.avg_judge.toFixed(2)]];
   clear($("#stat-cards")).append(...cards.map(([l, v]) => el("div", { class: "card" }, el("div", { class: "label" }, l), el("div", { class: "value" }, v))));
@@ -212,7 +213,7 @@ async function openTrace(id, switchTab = true) {
   pane.append(
     el("div", { class: "detail-head" },
       el("span", { class: "badge " + t.status }, t.status), el("span", { class: "grow muted small" },
-        `${t.source} · ${t.model || ""} · ${ms(t.latency_ms)} · ${money(t.cost_usd)} · ${t.input_tokens} in / ${t.output_tokens} out · ${t.iterations} steps`),
+        `${t.source} · ${t.model || ""} · ${ms(t.latency_ms)} · ${money(t.cost_usd)} · ${t.input_tokens} in + ${t.cache_read_tokens || 0} cached / ${t.output_tokens} out · ${t.iterations} steps`),
       action("Judge", async () => { try { const v = await api("/api/judge", { method: "POST", body: { turn_id: id } }); toast(`Judge: ${v.grade}/5 — ${v.reason}`); openTrace(id, false); } catch (e) { toast(e.message); } }),
       action("Add to evals", async () => { try { const c = await api("/api/to-eval", { method: "POST", body: { turn_id: id } }); toast(`Added case ${c.id} to mine.jsonl`); } catch (e) { toast(e.message); } })),
     el("div", { class: "muted small" }, "Message"), el("div", { class: "reply" }, t.message),

@@ -2,7 +2,9 @@
 {"id": "greeting-skips-memory", "message": "hi!", "expect": {"gate": {"retrieve": false}, "no_tools": ["search_memory"], "max_cost_usd": 0.05}}
 {"id": "recalls-a-fact", "setup_facts": ["The user's sister Priya lives in Pune"], "message": "Where does my sister live?", "expect": {"reply_contains": ["Pune"], "gate": {"retrieve": true}}}
 {"id": "remembers-on-request", "message": "Please remember that my favourite tea is masala chai.", "expect": {"tools": ["remember"], "facts_contain": ["masala chai"], "no_tool_errors": true}}
-{"id": "uses-the-clock", "message": "What day of the week is it today?", "expect": {"tools": ["current_time"]}}
+// knows-the-date checks the outcome, not the tool: the time is in the system prompt, so a correct
+// answer needs no current_time call. Update the year in this case each January.
+{"id": "knows-the-date", "message": "What year is it right now? Answer with just the year.", "expect": {"reply_contains": ["2026"], "no_tool_errors": true}}
 {"id": "writes-to-workspace", "message": "Save a file called todo.md in my workspace with two items: buy milk, call Priya.", "expect": {"tools": ["workspace__write_file"], "no_tool_errors": true}}
 {"id": "searches-the-web", "message": "What is the latest stable version of Python? Check the web.", "expect": {"tools": ["web_search"], "judge_min": 0.75}, "criteria": "Names a specific version found on the web, with a source."}
 {"id": "multi-turn-pronoun", "messages": ["My colleague Meera is great at SQL.", "What is she good at?"], "expect": {"reply_contains": ["SQL"]}}

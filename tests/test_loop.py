@@ -104,3 +104,42 @@ def test_tool_failures_reach_the_model_as_errors():
     assert tools.execute("missing", {}) == ("Unknown tool: missing", True)
     assert tools.execute("careful", {}) == ("Folder not found.", True)
     assert tools.execute("boom", {}) == ("ZeroDivisionError: division by zero", True)
+
+
+def test_caching_is_requested_and_priced():
+    from loop.agent import run_loop
+    from ops.pricing import cost
+    from tools.registry import ToolRegistry
+    import types
+    response = message(text("hi"))
+    response.usage = types.SimpleNamespace(input_tokens=100, output_tokens=10,
+                                           cache_read_input_tokens=8000, cache_creation_input_tokens=50)
+    client = FakeClient([response])
+    events = []
+    system = [{"type": "text", "text": "stable", "cache_control": {"type": "ephemeral"}},
+              {"type": "text", "text": "per turn"}]
+    result = run_loop(client, "claude-opus-5-5", system, [{"role": "user", "content": "hi"}],
+                      ToolRegistry(), lambda kind, **kw: events.append((kind, kw)))
+    assert client.requests[0]["cache_control"] == {"type": "ephemeral"}
+    assert (result.cache_read_tokens, result.cache_write_tokens) == (8000, 50)
+    # 100 full-price + 8000 at $0.20/M + 50 at 1.25x $4/M + 10 output at $20/M
+    expected = (100 * 4 + 8000 * 0.20 + 50 * 5 + 10 * 20) / 1_000_000
+    assert result.cost_usd == pytest.approx(expected)
+    assert cost("claude-opus-5-5", 0, 0, cache_read=1_000_000) == pytest.approx(0.20)
+    assert cost("claude-haiku-5-5", 0, 0, cache_read=1_000_000) == pytest.approx(0.01)
+    llm = next(kw for kind, kw in events if kind == "llm")
+    assert llm["cache_read_tokens"] == 8000
+
+
+def test_limit_note_goes_after_cached_blocks():
+    from loop.agent import LIMIT_NOTE, run_loop
+    from tools.registry import Tool, ToolRegistry
+    registry = ToolRegistry()
+    registry.register(Tool("t", "d", {"type": "object", "properties": {}}, lambda: "ok"))
+    client = FakeClient(lambda req: message(text("done")) if req.get("tool_choice")
+                        else message(tool_use("t", {}), stop_reason="tool_use"))
+    system = [{"type": "text", "text": "stable", "cache_control": {"type": "ephemeral"}}]
+    run_loop(client, "m", system, [{"role": "user", "content": "x"}], registry,
+             lambda *a, **k: None, max_iterations=1)
+    last = client.requests[-1]["system"]
+    assert last[0] == system[0] and last[-1]["text"] == LIMIT_NOTE

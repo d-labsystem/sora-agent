@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS turns (
     iterations INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
     web_searches INTEGER DEFAULT 0,
     tool_calls INTEGER DEFAULT 0,
     tool_errors INTEGER DEFAULT 0,
@@ -89,6 +91,11 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     started_at TEXT NOT NULL,
     ended_at TEXT);
 """
+
+# Columns added after the first release. Older traces.db files get them on
+# startup: a tiny migration, so an upgrade never needs you to delete your data.
+MIGRATIONS = {"turns": {"cache_read_tokens": "INTEGER DEFAULT 0",
+                        "cache_write_tokens": "INTEGER DEFAULT 0"}}
 
 LIVE_ONLY = {"text"}        # streamed text deltas go to the UI, not the database
 MAX_VALUE = 4000            # characters per string stored in a span
@@ -155,6 +162,8 @@ class Turn:
             llm = t.conn.execute(
                 "SELECT COALESCE(SUM(json_extract(data,'$.input_tokens')),0) AS i, "
                 "COALESCE(SUM(json_extract(data,'$.output_tokens')),0) AS o, "
+                "COALESCE(SUM(json_extract(data,'$.cache_read_tokens')),0) AS cr, "
+                "COALESCE(SUM(json_extract(data,'$.cache_write_tokens')),0) AS cw, "
                 "COALESCE(SUM(json_extract(data,'$.web_searches')),0) AS w, "
                 "COALESCE(SUM(json_extract(data,'$.cost_usd')),0) AS c "
                 "FROM spans WHERE turn_id = ? AND kind = 'llm'", (self.id,)).fetchone()
@@ -163,11 +172,12 @@ class Turn:
                 "FROM spans WHERE turn_id = ? AND kind = 'tool'", (self.id,)).fetchone()
             t.conn.execute(
                 "UPDATE turns SET reply=?, status=?, model=COALESCE(?, model), iterations=?, "
-                "error=?, checks=?, input_tokens=?, output_tokens=?, web_searches=?, cost_usd=?, "
+                "error=?, checks=?, input_tokens=?, output_tokens=?, cache_read_tokens=?, "
+                "cache_write_tokens=?, web_searches=?, cost_usd=?, "
                 "tool_calls=?, tool_errors=?, latency_ms=?, ended_at=? WHERE id=?",
                 (reply, status, model, iterations, error,
                  json.dumps(checks) if checks is not None else None,
-                 llm["i"], llm["o"], llm["w"], round(llm["c"], 6), tools["n"], tools["bad"],
+                 llm["i"], llm["o"], llm["cr"], llm["cw"], llm["w"], round(llm["c"], 6), tools["n"], tools["bad"],
                  self.elapsed_ms(), now_iso(), self.id))
             t.conn.commit()
         return t.turn(self.id)
@@ -182,12 +192,21 @@ class Tracer:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self._recover()
 
     def _write(self, sql: str, params: tuple = ()) -> None:
         with self.lock:
             self.conn.execute(sql, params)
             self.conn.commit()
+
+    def _migrate(self) -> None:
+        for table, columns in MIGRATIONS.items():
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns.items():
+                if name not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        self.conn.commit()
 
     def _recover(self) -> None:
         """Turns still 'running' at startup were cut off by a crash or restart."""
@@ -265,6 +284,9 @@ class Tracer:
                 "COALESCE(SUM(status != 'ok' AND status != 'running'),0) AS failed, "
                 "COALESCE(SUM(cost_usd),0) AS cost_usd, AVG(latency_ms) AS avg_latency_ms, "
                 "COALESCE(SUM(web_searches),0) AS web_searches, "
+                "COALESCE(SUM(input_tokens),0) AS input_tokens, "
+                "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
+                "COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens, "
                 "COALESCE(SUM(tool_calls),0) AS tool_calls, COALESCE(SUM(tool_errors),0) AS tool_errors, "
                 "COALESCE(SUM(feedback = 1),0) AS thumbs_up, COALESCE(SUM(feedback = -1),0) AS thumbs_down, "
                 "AVG(judge_score) AS avg_judge "
@@ -286,6 +308,9 @@ class Tracer:
                     error_rate=head["failed"] / head["turns"] if head["turns"] else 0.0,
                     per_day=per_day, per_tool=per_tool, days=days)
         head["cost_usd"] = round(head["cost_usd"], 6)
+        # Share of input tokens served from cache: the number caching should push up.
+        all_input = head["input_tokens"] + head["cache_read_tokens"] + head["cache_write_tokens"]
+        head["cache_hit_rate"] = head["cache_read_tokens"] / all_input if all_input else 0.0
         return head
 
     def export_jsonl(self, out: IO[str], source: str | None = None, since: str | None = None) -> int:

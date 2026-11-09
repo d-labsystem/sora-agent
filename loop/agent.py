@@ -33,6 +33,11 @@ LIMIT_NOTE = ("You have reached the step limit for this turn and cannot call mor
 TRUNCATED = "\n\n(The reply hit the length limit and was cut off.)"
 REFUSED = "(The model declined this request.)"
 TRACE_OUTPUT_CHARS = 4000
+# Top-level automatic caching: the API puts a breakpoint on the last block of
+# each request, so every step of the loop reads the steps before it from cache.
+AUTO_CACHE = {"type": "ephemeral"}
+
+System = str | list[dict[str, Any]]
 
 
 @dataclass
@@ -47,13 +52,15 @@ class LoopResult:
     model: str = ""
     limit_reached: bool = False
     stop_reason: str = ""
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     @property
     def tool_errors(self) -> list[dict[str, Any]]:
         return [c for c in self.tool_calls if c["is_error"]]
 
 
-def _call_model(client, model: str, effort: str, system: str, messages: list, tools: list,
+def _call_model(client, model: str, effort: str, system: System, messages: list, tools: list,
                 notify: Notify, **extra):
     """One streamed model call. Text reaches the gateway as it is generated."""
     with client.beta.messages.stream(
@@ -65,6 +72,7 @@ def _call_model(client, model: str, effort: str, system: str, messages: list, to
         output_config={"effort": effort},
         betas=[FALLBACK_BETA],
         fallbacks="default",   # a declined request is retried on another model
+        cache_control=AUTO_CACHE,
         **extra,
     ) as stream:
         for delta in stream.text_stream:
@@ -92,16 +100,21 @@ def _server_results(block) -> dict[str, Any]:
 def _record(result: LoopResult, response, notify: Notify, iteration: int, ms: int) -> None:
     usage = response.usage
     searches = getattr(getattr(usage, "server_tool_use", None), "web_search_requests", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
     served_by = getattr(response, "model", "") or result.model
-    spent = cost(served_by, usage.input_tokens, usage.output_tokens, searches)
+    spent = cost(served_by, usage.input_tokens, usage.output_tokens, searches, cache_read, cache_write)
     result.input_tokens += usage.input_tokens
     result.output_tokens += usage.output_tokens
+    result.cache_read_tokens += cache_read
+    result.cache_write_tokens += cache_write
     result.web_searches += searches
     result.cost_usd += spent
     result.model = served_by
     notify("llm", name=f"model call {iteration}", model=served_by, ms=ms, ok=True,
            stop_reason=response.stop_reason, input_tokens=usage.input_tokens,
-           output_tokens=usage.output_tokens, web_searches=searches, cost_usd=spent)
+           output_tokens=usage.output_tokens, cache_read_tokens=cache_read,
+           cache_write_tokens=cache_write, web_searches=searches, cost_usd=spent)
     for block in response.content:
         if block.type == "server_tool_use":
             notify("server_tool", name=block.name, input=block.input)
@@ -109,7 +122,7 @@ def _record(result: LoopResult, response, notify: Notify, iteration: int, ms: in
             notify("server_result", name=block.type, **_server_results(block))
 
 
-def run_loop(client, model: str, system: str, messages: list, tools: ToolRegistry,
+def run_loop(client, model: str, system: System, messages: list, tools: ToolRegistry,
              notify: Notify, effort: str = "medium", max_iterations: int = 10,
              tool_notes: dict[str, list[str]] | None = None) -> LoopResult:
     """Run one turn. `messages` is only ever appended to."""
@@ -157,7 +170,10 @@ def run_loop(client, model: str, system: str, messages: list, tools: ToolRegistr
 
     result.limit_reached = True
     started = time.perf_counter()
-    response = _call_model(client, model, effort, f"{system}\n\n{LIMIT_NOTE}", messages, schemas,
+    # The note goes after the cached system blocks, so the cache still hits.
+    final_system = (system + [{"type": "text", "text": LIMIT_NOTE}] if isinstance(system, list)
+                    else f"{system}\n\n{LIMIT_NOTE}")
+    response = _call_model(client, model, effort, final_system, messages, schemas,
                            notify, tool_choice={"type": "none"})
     _record(result, response, notify, max_iterations + 1, int((time.perf_counter() - started) * 1000))
     result.reply = _text(response)

@@ -57,8 +57,9 @@ def script(request):
                        stop_reason="tool_use")
     if "skill" in words:
         return message(tool_use("load_skill", {"name": "travel-planner"}), stop_reason="tool_use")
-    notes = [line[2:] for line in request["system"].split("## Memory", 1)[-1].splitlines()
-             if line.startswith("- ")] if "## Memory" in request["system"] else []
+    system = "\n\n".join(b["text"] for b in request["system"])
+    notes = [line[2:] for line in system.split("## Memory", 1)[-1].splitlines()
+             if line.startswith("- ")] if "## Memory" in system else []
     reply = f"From memory: {notes[0]}" if notes else "Hi! (I'm the scripted demo model.)"
     return message(text(reply))
 

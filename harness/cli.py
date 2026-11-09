@@ -84,7 +84,8 @@ class Printer:
 
 def describe_turn(turn: dict) -> str:
     rows = [f"turn {turn['id']}  {turn['status']}  {turn.get('latency_ms') or 0}ms  "
-            f"${turn.get('cost_usd') or 0:.4f}  {turn.get('input_tokens')} in / "
+            f"${turn.get('cost_usd') or 0:.4f}  {turn.get('input_tokens')} in + "
+            f"{turn.get('cache_read_tokens') or 0} cached / "
             f"{turn.get('output_tokens')} out"]
     for s in turn.get("spans", []):
         mark = "✓" if s["ok"] else "✗"

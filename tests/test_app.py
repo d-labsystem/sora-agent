@@ -3,7 +3,7 @@
 import pytest
 
 from fake import FakeClient, message, text, tool_use
-from harness.app import NO_KEY, Settings, Sora, build_system, explain
+from harness.app import NO_KEY, Settings, Sora, build_system, explain, system_text
 from memory.gate import GateResult
 
 
@@ -48,7 +48,7 @@ def test_full_turn_with_memory_tools_and_trace(tmp_path):
     assert turn["status"] == "ok" and turn["reply"] == "Noted, masala chai it is."
     assert turn["checks"] == {"replied": True, "no_tool_errors": True, "within_step_limit": True}
     # memory recall reached the system prompt as labelled data
-    system = client.requests[0]["system"]
+    system = system_text(client.requests[0]["system"])
     assert "## Memory" in system and "- Aryan lives in Pune" in system
     assert "## Skills" in system and "research-brief" in system
     # the tool ran and was traced with provenance
@@ -153,9 +153,15 @@ def test_status_and_system_prompt_order(tmp_path):
     assert status["skills"][0]["name"] == "research-brief"
     found = GateResult(True, "q", False, "r", facts=["f1"], episodes=["(2026-11-01) e1"])
     from datetime import datetime
-    system = build_system("SOUL", datetime(2026, 11, 9, 10, 0), "- s: d", [], ["When x: y"], found)
+    blocks = build_system("SOUL", datetime(2026, 11, 9, 10, 0), "- s: d", [], ["When x: y"], found)
+    system = system_text(blocks)
     assert system.index("SOUL") < system.index("## Skills") < system.index("## Lessons") \
         < system.index("## Memory")
+    # the cached block holds only what's stable; the clock and memory come after it
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"} and "cache_control" not in blocks[1]
+    assert "Current local time" not in blocks[0]["text"] and "## Memory" not in blocks[0]["text"]
+    later = build_system("SOUL", datetime(2026, 11, 9, 10, 1), "- s: d", [], [], None)
+    assert later[0] == blocks[0]                       # a minute later: the cached prefix is identical
     assert "Past conversations:\n- (2026-11-01) e1" in system
 
 

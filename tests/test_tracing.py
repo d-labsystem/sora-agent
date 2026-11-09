@@ -114,3 +114,24 @@ def test_export_jsonl(tracer):
     assert tracer.export_jsonl(out) == 1
     record = json.loads(out.getvalue())
     assert record["message"] == "plan my week" and len(record["spans"]) == 5
+
+
+def test_cache_totals_and_old_database_migration(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)           # a traces.db from before the cache columns
+    conn.execute("CREATE TABLE turns (id TEXT PRIMARY KEY, session_id TEXT, source TEXT NOT NULL DEFAULT 'chat', "
+                 "eval_run TEXT, message TEXT NOT NULL, reply TEXT, model TEXT, status TEXT NOT NULL DEFAULT 'running', "
+                 "error TEXT, iterations INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, "
+                 "web_searches INTEGER DEFAULT 0, tool_calls INTEGER DEFAULT 0, tool_errors INTEGER DEFAULT 0, "
+                 "cost_usd REAL DEFAULT 0, latency_ms INTEGER, checks TEXT, feedback INTEGER, feedback_note TEXT, "
+                 "judge_score REAL, judge_reason TEXT, started_at TEXT NOT NULL, ended_at TEXT)")
+    conn.execute("INSERT INTO turns (id, message, status, started_at) VALUES ('old', 'hi', 'ok', '2026-11-09')")
+    conn.commit(); conn.close()
+    tracer = Tracer(path)
+    assert tracer.turn("old")["cache_read_tokens"] == 0
+    turn = tracer.start("x")
+    turn.notify("llm", name="call", input_tokens=100, cache_read_tokens=900, cache_write_tokens=0, cost_usd=0.001)
+    row = turn.finish("ok")
+    assert row["cache_read_tokens"] == 900
+    assert tracer.stats()["cache_hit_rate"] == pytest.approx(0.9)
