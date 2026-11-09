@@ -42,7 +42,7 @@ class FakeClient:
 
     def __init__(self, script=(), small=None):
         self.script = script if callable(script) else list(script)
-        self.small = small if small is not None else {"retrieve": False, "query": "", "reason": "n/a"}
+        self.small = small if small is not None else {"retrieve": False, "query": "", "correction": False, "reason": "n/a"}
         self.requests = []
         self.small_requests = []
         self.beta = NS(messages=NS(stream=self._stream))
