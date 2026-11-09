@@ -150,7 +150,7 @@ def test_status_and_system_prompt_order(tmp_path):
     agent, _, _ = make(tmp_path, [])
     status = agent.status()
     assert {"remember", "web_search"} <= {t["name"] for t in status["tools"]}
-    assert status["skills"][0]["name"] == "research-brief"
+    assert {"research-brief", "paper-research"} <= {k["name"] for k in status["skills"]}
     found = GateResult(True, "q", False, "r", facts=["f1"], episodes=["(2026-11-01) e1"])
     from datetime import datetime
     blocks = build_system("SOUL", datetime(2026, 11, 9, 10, 0), "- s: d", [], ["When x: y"], found)
@@ -184,3 +184,18 @@ def test_with_workspace_mcp(tmp_path):
         assert agent.status()["mcp"][0]["status"] == "connected"
     finally:
         agent.close()
+
+
+def test_web_limits_reach_the_request(tmp_path, monkeypatch):
+    from harness.app import load_settings
+    monkeypatch.setenv("SORA_WEB_MAX_SEARCHES", "2")
+    monkeypatch.setenv("SORA_WEB_FETCH_MAX_TOKENS", "0")
+    settings = load_settings(tmp_path)
+    assert (settings.web_max_searches, settings.web_max_fetches, settings.web_fetch_max_tokens) == (2, 4, 0)
+    client = FakeClient([message(text("ok"))], small=SmallModel())
+    agent = Sora(settings, client, connect_mcp=False)
+    agent.respond("hi")
+    tools = {t["name"]: t for t in client.requests[0]["tools"]}
+    assert tools["web_search"]["max_uses"] == 2
+    assert tools["web_fetch"]["max_uses"] == 4 and "max_content_tokens" not in tools["web_fetch"]
+    assert agent.status()["web_limits"] == {"searches": 2, "fetches": 4, "fetch_tokens": 0}

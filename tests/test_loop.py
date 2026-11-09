@@ -143,3 +143,13 @@ def test_limit_note_goes_after_cached_blocks():
              lambda *a, **k: None, max_iterations=1)
     last = client.requests[-1]["system"]
     assert last[0] == system[0] and last[-1]["text"] == LIMIT_NOTE
+
+
+def test_web_tool_limits():
+    from tools.registry import web_tools
+    search, fetch = web_tools(5, 4, 20000)
+    assert search == {"type": "web_search_20260209", "name": "web_search", "max_uses": 5}
+    assert fetch == {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 4,
+                     "max_content_tokens": 20000}
+    assert web_tools() == WEB_TOOLS                           # 0 everywhere: no limits sent
+    assert "max_uses" not in WEB_TOOLS[0]                     # the shared constant isn't mutated

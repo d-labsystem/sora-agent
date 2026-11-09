@@ -66,3 +66,11 @@ def test_broken_file_is_reported_not_fatal(library, tmp_path):
 def test_parse_defaults_name_to_folder(tmp_path):
     skill = parse("---\ndescription: d\n---\nbody", tmp_path / "my-skill" / "SKILL.md")
     assert skill.name == "my-skill" and skill.triggers == []
+
+
+def test_paper_research_wins_for_paper_requests(library):
+    asked = "im aryan, so fetch some research paper or posts about inference engineering"
+    names = [s.name for s in library.match(asked)]
+    assert names[0] == "paper-research" and "research-brief" in names    # both load, papers first
+    assert [s.name for s in library.match("what's the latest on the Fed rate?")] == ["research-brief"]
+    assert library.get("paper-research").bundled

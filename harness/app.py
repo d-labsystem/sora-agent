@@ -47,7 +47,7 @@ from ops.tracing import Tracer
 from tools import workspace_server
 from tools.builtin import TurnContext, register_builtins
 from tools.mcp_client import MCPManager, load_config
-from tools.registry import WEB_TOOLS, ToolRegistry
+from tools.registry import ToolRegistry, web_tools
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +81,9 @@ class Settings:
     history_turns: int = 10
     consolidate_every: int = 6
     web_tools: bool = True
+    web_max_searches: int = 5               # per model call; 0 = unlimited
+    web_max_fetches: int = 4                # per model call; 0 = unlimited
+    web_fetch_max_tokens: int = 20000       # per fetched page or PDF; 0 = unlimited
     workspace: bool = True                  # the bundled workspace MCP server
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
@@ -107,6 +110,9 @@ def load_settings(home: Path | str | None = None) -> Settings:
         history_turns=int(os.getenv("SORA_HISTORY_TURNS", d.history_turns)),
         consolidate_every=int(os.getenv("SORA_CONSOLIDATE_EVERY", d.consolidate_every)),
         web_tools=_flag("SORA_WEB_TOOLS", d.web_tools),
+        web_max_searches=int(os.getenv("SORA_WEB_MAX_SEARCHES", d.web_max_searches)),
+        web_max_fetches=int(os.getenv("SORA_WEB_MAX_FETCHES", d.web_max_fetches)),
+        web_fetch_max_tokens=int(os.getenv("SORA_WEB_FETCH_MAX_TOKENS", d.web_fetch_max_tokens)),
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
@@ -182,7 +188,9 @@ class Sora:
         if not self.soul_path.exists():
             self.soul_path.write_text(DEFAULT_SOUL + "\n", encoding="utf-8")
 
-        self.registry = ToolRegistry(WEB_TOOLS if settings.web_tools else [])
+        web = web_tools(settings.web_max_searches, settings.web_max_fetches,
+                        settings.web_fetch_max_tokens) if settings.web_tools else []
+        self.registry = ToolRegistry(web)
         register_builtins(self.registry, self.store, self.skills, self.context)
         self.mcp: MCPManager | None = None
         if connect_mcp:
@@ -314,6 +322,8 @@ class Sora:
     def status(self) -> dict:
         s = self.settings
         return {"model": s.model, "small_model": s.small_model, "effort": s.effort,
+                "web_limits": {"searches": s.web_max_searches, "fetches": s.web_max_fetches,
+                               "fetch_tokens": s.web_fetch_max_tokens},
                 "home": str(s.home), "tools": self.registry.describe(),
                 "mcp": self.mcp.status() if self.mcp else [],
                 "skills": [{"name": k.name, "description": k.description, "triggers": k.triggers,

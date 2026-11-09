@@ -24,6 +24,31 @@ WEB_TOOLS = [
 ]
 
 
+def web_tools(max_searches: int = 0, max_fetches: int = 0, fetch_max_tokens: int = 0) -> list[dict]:
+    """The web tools with spending limits. 0 means no limit.
+
+    Web research happens inside ONE model call: Anthropic's servers search,
+    fetch and filter in a loop before the response comes back, so nothing in
+    our loop can trim it. These limits act there instead:
+
+      max_uses            searches / fetches allowed per request. Past it the
+                          tool returns a max_uses_exceeded error and the model
+                          answers with what it has.
+      max_content_tokens  how much of each fetched page or PDF is read. A
+                          research paper can be 20k+ tokens; the abstract,
+                          introduction and results usually come first.
+
+    Both trade completeness for cost, so they are settings, not constants."""
+    search, fetch = dict(WEB_TOOLS[0]), dict(WEB_TOOLS[1])
+    if max_searches:
+        search["max_uses"] = max_searches
+    if max_fetches:
+        fetch["max_uses"] = max_fetches
+    if fetch_max_tokens:
+        fetch["max_content_tokens"] = fetch_max_tokens
+    return [search, fetch]
+
+
 class ToolError(Exception):
     """Raised by a tool to report a failure the model should read."""
 

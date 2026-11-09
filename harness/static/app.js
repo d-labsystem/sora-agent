@@ -302,7 +302,10 @@ async function loadTools() {
     el("div", { class: "sub" }, m.error || m.tools.join(", "))), el("span", { class: m.status === "connected" ? "ok" : "bad" }, m.status)));
   if (!s.mcp.length) ul.append(el("li", { class: "muted" }, "No MCP servers."));
   const kv = clear($("#settings"));
-  for (const [k, v] of [["model", s.model], ["small model", s.small_model], ["effort", s.effort], ["home", s.home]]) kv.append(el("dt", {}, k), el("dd", {}, v));
+  const lim = s.web_limits || {}, n = (v) => v ? String(v) : "no limit";
+  for (const [k, v] of [["model", s.model], ["small model", s.small_model], ["effort", s.effort],
+    ["web searches / call", n(lim.searches)], ["web fetches / call", n(lim.fetches)],
+    ["tokens per fetch", n(lim.fetch_tokens)], ["home", s.home]]) kv.append(el("dt", {}, k), el("dd", {}, v));
   for (const e of s.skill_errors) kv.append(el("dt", { class: "bad" }, "skill error"), el("dd", {}, e));
 }
 
