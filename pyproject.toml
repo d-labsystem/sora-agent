@@ -1,0 +1,17 @@
+[project]
+name = "sora"
+version = "0.1.0"
+description = "A local personal AI assistant: harness, loop, memory, tools and ops."
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=2.6",
+    "mcp>=2.3",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
