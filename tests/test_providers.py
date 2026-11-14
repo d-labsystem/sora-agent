@@ -204,3 +204,56 @@ def test_app_leaves_out_web_tools_for_providers_without_them(tmp_path, monkeypat
     status = agent.status()["providers"]
     assert status == {"main": "openai", "small": "anthropic", "web_tools": False,
                       "prices_known": ["claude-haiku-5-5"]}
+
+
+# ---- errors found in the live test
+
+class StatusError(Exception):
+    def __init__(self, status, message, body=None):
+        super().__init__(message)
+        self.status_code, self.message, self.body = status, message, body
+
+
+def test_effort_refused_with_tools_is_retried_once_then_remembered():
+    refusal = StatusError(400, "Error code: 400 - Function tools with reasoning_effort are not "
+                               "supported for gpt-5.4-mini in /v1/chat/completions.")
+    calls = []
+
+    def create(**request):
+        calls.append(request)
+        if "reasoning_effort" in request and request.get("tools"):
+            raise refusal
+        return iter([chunk(content="ok", finish="stop")])
+
+    client = NS(chat=NS(completions=NS(create=create)))
+    provider = OpenAICompatProvider(client)
+    tools = echo_registry().schemas()
+    assert provider.step("gpt-5.4-mini", "s", [], tools, "low", print).text == "ok"
+    assert len(calls) == 2 and "reasoning_effort" not in calls[1]
+    provider.step("gpt-5.4-mini", "s", [], tools, "low", print)        # remembered: one call, no effort
+    assert len(calls) == 3 and "reasoning_effort" not in calls[2]
+    provider.step("gpt-5.4-mini", "s", [], [], "low", print)           # without tools, effort stays on
+    assert calls[3]["reasoning_effort"] == "low"
+
+
+def test_http_errors_say_what_to_do():
+    from harness.app import explain
+    payment = StatusError(402, "Error code: 402", body="Purchase pre-paid credits to continue.")
+
+    def create(**request):
+        raise payment
+
+    provider = OpenAICompatProvider(NS(chat=NS(completions=NS(create=create))), "hf", openai_params=False)
+    with pytest.raises(providers.ProviderError) as info:
+        provider.step("Qwen/Qwen3-32B", "s", [], [], "low", print)
+    assert explain(info.value) == "hf needs credits on the account (402): Purchase pre-paid credits to continue."
+    bad_key = providers.ProviderError.wrap("openai", StatusError(401, "x", body={"error": {"message": "Incorrect API key"}}))
+    assert "OPENAI_API_KEY" in explain(bad_key) and "ANTHROPIC" not in explain(bad_key)
+
+
+def test_error_reason_when_the_sdk_already_unwrapped_it():
+    # live Hugging Face 402: the SDK hands over body as the message string
+    exc = StatusError(402, "Error code: 402", body="Purchase pre-paid credits to continue.")
+    assert str(providers.ProviderError.wrap("hf", exc)).endswith("Purchase pre-paid credits to continue.")
+    exc = StatusError(401, "x", body={"message": "Incorrect API key provided", "type": "invalid_request_error"})
+    assert "Incorrect API key provided" in str(providers.ProviderError.wrap("openai", exc))

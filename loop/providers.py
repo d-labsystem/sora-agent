@@ -259,10 +259,51 @@ def _usage(u) -> Usage:
                  output_tokens=u.completion_tokens or 0, cache_read=cached)
 
 
+KEY_NAMES = {"openai": "OPENAI_API_KEY", "hf": "HF_TOKEN", "local": "SORA_LOCAL_API_KEY"}
+
+
+class ProviderError(RuntimeError):
+    """A provider's HTTP error, with the reason a person can act on."""
+
+    @classmethod
+    def wrap(cls, provider: str, exc: Exception) -> Exception:
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            return exc                                  # network errors etc. pass through
+        # The SDK unwraps {"error": ...}: body is then the message string itself
+        # (Hugging Face) or a dict with a "message" (OpenAI).
+        body = getattr(exc, "body", None)
+        detail = body if isinstance(body, str) else None
+        if isinstance(body, dict):
+            detail = body.get("message") or body.get("error")
+            if isinstance(detail, dict):
+                detail = detail.get("message")
+        detail = detail or getattr(exc, "message", "") or str(exc)
+        if status == 401:
+            return cls(f"{provider} rejected the key in {KEY_NAMES.get(provider, 'its key')}: {detail}")
+        if status == 402:
+            return cls(f"{provider} needs credits on the account (402): {detail}")
+        if status == 429:
+            return cls(f"{provider} rate limit or quota (429): {detail}")
+        return cls(f"{provider} returned {status}: {detail}")
+
+
+def _effort_with_tools_refused(exc: Exception) -> bool:
+    """Newer OpenAI models accept reasoning OR function tools on Chat
+    Completions, not both (400: 'Function tools with reasoning_effort are not
+    supported ... use /v1/responses'). Found in a live test on 2026-11-15."""
+    return getattr(exc, "status_code", None) == 400 and "reasoning_effort" in str(exc)
+
+
 class OpenAICompatProvider:
     """Chat Completions, which OpenAI, Hugging Face's router and local servers
     (vLLM, SGLang, TGI) all speak. `openai_params` turns on the two parameters
-    only OpenAI's own API accepts: max_completion_tokens and reasoning_effort."""
+    only OpenAI's own API accepts: max_completion_tokens and reasoning_effort.
+
+    Reasoning and tools: some OpenAI models refuse reasoning_effort when tools
+    are sent. The first refusal is remembered per model, and from then on that
+    model runs tool steps without reasoning (effort "none"). The Responses API
+    would keep reasoning on with tools; that is a separate adapter."""
 
     server_tools = False
 
@@ -270,22 +311,37 @@ class OpenAICompatProvider:
         self.client = client
         self.name = name
         self.openai_params = openai_params
+        self.no_effort_with_tools: set[str] = set()
 
-    def _limits(self, model: str, effort: str | None, max_tokens: int) -> dict:
+    def _limits(self, model: str, effort: str | None, max_tokens: int, tools: bool = False) -> dict:
         if not self.openai_params:
             return {"max_tokens": max_tokens}
         params: dict[str, Any] = {"max_completion_tokens": max_tokens}
         # Only reasoning models take an effort; sending it to others is an error.
-        if effort and (model.startswith(("gpt-5", "o1", "o3", "o4"))):
+        if effort and model.startswith(("gpt-5", "o1", "o3", "o4")) \
+                and not (tools and model in self.no_effort_with_tools):
             params["reasoning_effort"] = effort
         return params
+
+    def _create(self, request: dict):
+        try:
+            return self.client.chat.completions.create(**request)
+        except Exception as exc:
+            if "reasoning_effort" in request and request.get("tools") and _effort_with_tools_refused(exc):
+                self.no_effort_with_tools.add(request["model"])
+                request = {k: v for k, v in request.items() if k != "reasoning_effort"}
+                try:
+                    return self.client.chat.completions.create(**request)
+                except Exception as retry_exc:
+                    raise ProviderError.wrap(self.name, retry_exc) from retry_exc
+            raise ProviderError.wrap(self.name, exc) from exc
 
     def step(self, model, system, messages, tools, effort, on_text, final=False) -> Step:
         functions = to_openai_tools(tools)
         request: dict[str, Any] = {
             "model": model, "messages": to_openai_messages(system, messages),
             "stream": True, "stream_options": {"include_usage": True},
-            **self._limits(model, effort, 32000)}
+            **self._limits(model, effort, 32000, tools=bool(functions))}
         if functions:
             request["tools"] = functions
             if final:
@@ -293,7 +349,7 @@ class OpenAICompatProvider:
 
         text, finish, served, usage = [], None, model, None
         slots: dict[int, dict[str, str]] = {}     # tool calls stream in pieces, by index
-        for chunk in self.client.chat.completions.create(**request):
+        for chunk in self._create(request):
             served = getattr(chunk, "model", None) or served
             if getattr(chunk, "usage", None):
                 usage = chunk.usage                # the last chunk, no choices
@@ -326,11 +382,11 @@ class OpenAICompatProvider:
                     stop_reason=stop, model=served, usage=_usage(usage))
 
     def ask_json(self, model, prompt, output_format, max_tokens):
-        response = self.client.chat.completions.create(
+        response = self._create(dict(
             model=model, messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_schema", "json_schema": {
                 "name": "answer", "schema": output_format["schema"], "strict": True}},
-            **self._limits(model, "low", max_tokens))
+            **self._limits(model, "low", max_tokens)))
         usage = _usage(response.usage)
         choice = response.choices[0]
         if choice.finish_reason == "length" or getattr(choice.message, "refusal", None):

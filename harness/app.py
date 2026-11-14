@@ -38,7 +38,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from loop.agent import run_loop
-from loop.providers import Providers, split_model
+from loop.providers import ProviderError, Providers, split_model
 from memory.consolidation import consolidate
 from memory.gate import GateResult, recall
 from memory.embeddings import DEFAULT_MODEL, Embedder
@@ -150,6 +150,8 @@ def _load_prices() -> None:
 
 def explain(exc: Exception) -> str:
     """What a person reads when a turn fails."""
+    if isinstance(exc, ProviderError):
+        return str(exc)                    # already says which provider, and why
     if isinstance(exc, anthropic.AuthenticationError) or "authentication" in str(exc).lower() \
             or "api_key" in str(exc).lower():
         return NO_KEY
