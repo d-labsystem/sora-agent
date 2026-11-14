@@ -220,6 +220,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     ev = sub.add_parser("eval", help="run an eval dataset")
     ev.add_argument("dataset")
     ev.add_argument("--min-pass", default="0")
+    ev.add_argument("--label", default="")
+    ev.add_argument("--repeat", default="1")
+    ev.add_argument("--rejudge", metavar="RUN_ID", help="grade an old run again; the agent doesn't run")
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
@@ -231,7 +234,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "eval":       # builds its own agents, one per case
         from ops import evals
-        return evals.main([args.dataset, "--min-pass", args.min_pass])
+        return evals.main([args.dataset, "--min-pass", args.min_pass, "--label", args.label,
+                           "--repeat", args.repeat]
+                          + (["--rejudge", args.rejudge] if args.rejudge else []))
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

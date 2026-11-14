@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 from loop.agent import run_loop
 from memory.consolidation import consolidate
 from memory.gate import GateResult, recall
+from memory.embeddings import DEFAULT_MODEL, Embedder
 from memory.learning import LessonStore, detect, reflect
 from memory.skills import Skill, SkillLibrary
 from memory.store import MemoryStore
@@ -46,6 +47,7 @@ from ops.evals import append_case, judge, trace_to_case, turn_checks
 from ops.tracing import Tracer
 from tools import workspace_server
 from tools.builtin import TurnContext, register_builtins
+from tools.visuals import VISUAL_TOOLS, visual_tools
 from tools.mcp_client import MCPManager, load_config
 from tools.registry import ToolRegistry, web_tools
 
@@ -81,12 +83,19 @@ class Settings:
     history_turns: int = 10
     consolidate_every: int = 6
     web_tools: bool = True
-    web_max_searches: int = 5               # per model call; 0 = unlimited
+    # 8, not 5: the model searches from server-side code and sometimes repeats a query;
+    # at 5 that starved 2 of 3 research runs (evals/research-briefs.jsonl, 2026-11-10).
+    web_max_searches: int = 8               # per model call; 0 = unlimited
     web_max_fetches: int = 4                # per model call; 0 = unlimited
     web_fetch_max_tokens: int = 20000       # per fetched page or PDF; 0 = unlimited
     workspace: bool = True                  # the bundled workspace MCP server
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
+    embeddings: bool = True                 # search memory by meaning (local model)
+    embedding_model: str = DEFAULT_MODEL
+    memory_min_similarity: float = 0.45
+    # Shared by every home, so eval cases (each in a fresh home) reuse one download.
+    models_dir: Path = Path.home() / ".sora" / "models"
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -116,6 +125,10 @@ def load_settings(home: Path | str | None = None) -> Settings:
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
+        embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
+        embedding_model=os.getenv("SORA_EMBEDDING_MODEL", d.embedding_model),
+        memory_min_similarity=float(os.getenv("SORA_MEMORY_MIN_SIMILARITY", d.memory_min_similarity)),
+        models_dir=Path(os.getenv("SORA_MODELS_DIR", str(d.models_dir))).expanduser(),
     )
 
 
@@ -168,16 +181,41 @@ def system_text(system: list[dict] | str) -> str:
     return system if isinstance(system, str) else "\n\n".join(b["text"] for b in system)
 
 
+def action_note(tool_calls: list[dict], server_calls: list[dict], limit: int = 8) -> str | None:
+    """A compact record of what a reply did, for the next turns' history.
+    Short on purpose: it rides along in every later request of the session."""
+    def clip(value, n):
+        text = " ".join(str(value).split())
+        return text if len(text) <= n else text[:n - 1] + "…"
+    items = []
+    for c in tool_calls[:limit]:
+        args = ", ".join(f"{k}={clip(v, 80)!r}" for k, v in (c.get("args") or {}).items()
+                         if k not in ("svg", "rows", "series"))
+        status = "failed" if c.get("is_error") else "ok"
+        items.append(f"{c['tool']}({args}) -> {status}: {clip(c.get('output', ''), 100)}")
+    for c in server_calls[:limit]:
+        args = c.get("args") or {}
+        items.append(f"{c['tool']}({clip(args.get('query') or args.get('url') or '', 80)!r})")
+    if not items:
+        return None
+    more = len(tool_calls) + len(server_calls) - len(items)
+    return ("[Recorded by the app, not written by you. Tools used in this reply: "
+            + "; ".join(items) + (f"; and {more} more" if more > 0 else "") + "]")
+
+
 # ---- the agent
 
 class Sora:
     def __init__(self, settings: Settings, client=None, tracer: Tracer | None = None,
-                 connect_mcp: bool = True):
+                 connect_mcp: bool = True, embedder: Embedder | None = None):
         self.settings = settings
         home = settings.home
         home.mkdir(parents=True, exist_ok=True)
         self.client = client or anthropic.Anthropic()
-        self.store = MemoryStore(home / "memory.db")
+        if embedder is None and settings.embeddings:
+            embedder = Embedder(settings.models_dir, settings.embedding_model)   # loads lazily
+        self.embedder = embedder
+        self.store = MemoryStore(home / "memory.db", embedder, settings.memory_min_similarity)
         self.lessons = LessonStore(home / "memory.db")
         self.skills = SkillLibrary(home / "skills")
         self.tracer = tracer or Tracer(home / "traces.db")
@@ -192,6 +230,8 @@ class Sora:
                         settings.web_fetch_max_tokens) if settings.web_tools else []
         self.registry = ToolRegistry(web)
         register_builtins(self.registry, self.store, self.skills, self.context)
+        for tool in visual_tools():
+            self.registry.register(tool)
         self.mcp: MCPManager | None = None
         if connect_mcp:
             self._start_mcp()
@@ -253,7 +293,10 @@ class Sora:
                 notify("reply", name="reply ready", reply=result.reply, status=status)
 
                 # 6-8. save, learn, consolidate (after the reply is shown)
-                self.store.add_exchange(session_id, message, result.reply, turn.id)
+                visuals = [{"tool": c["tool"], **c["args"]} for c in result.tool_calls
+                           if c["tool"] in VISUAL_TOOLS and not c["is_error"]]
+                self.store.add_exchange(session_id, message, result.reply, turn.id,
+                                        action_note(result.tool_calls, result.server_calls), visuals)
                 signals = detect(len(result.tool_errors), result.limit_reached, found.correction)
                 if signals:
                     reflect(self.lessons, self.client, s.small_model, signals, message,
@@ -322,6 +365,8 @@ class Sora:
     def status(self) -> dict:
         s = self.settings
         return {"model": s.model, "small_model": s.small_model, "effort": s.effort,
+                "memory_search": (f"hybrid ({s.embedding_model})" if self.store.embedder
+                                  else "words only"),
                 "web_limits": {"searches": s.web_max_searches, "fetches": s.web_max_fetches,
                                "fetch_tokens": s.web_fetch_max_tokens},
                 "home": str(s.home), "tools": self.registry.describe(),
@@ -344,7 +389,10 @@ def eval_setup():
     tracer = Tracer(settings.home / "traces.db")
     client = anthropic.Anthropic()
 
+    embedder = Embedder(settings.models_dir, settings.embedding_model) if settings.embeddings else None
+
     def factory(home: Path, tr: Tracer) -> Sora:
-        return Sora(replace(settings, home=home, auto_judge=False), client, tracer=tr)
+        return Sora(replace(settings, home=home, auto_judge=False), client, tracer=tr,
+                    embedder=embedder)   # one model load for the whole run
 
     return tracer, client, settings.model, settings.small_model, factory

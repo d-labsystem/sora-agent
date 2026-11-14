@@ -7,7 +7,7 @@ import pytest
 
 from fake import FakeClient
 from memory.store import MemoryStore
-from ops.evals import (append_case, case_checks, judge, load_cases, main, run_eval,
+from ops.evals import (append_case, case_checks, judge, load_cases, main, run_eval, visual_summary,
                        trace_to_case, turn_checks)
 from ops.tracing import Tracer
 
@@ -138,3 +138,68 @@ def test_release_gate_exit_code(tmp_path, monkeypatch, capsys):
     assert main([str(data), "--min-pass", "0.8"]) == 1
     out = capsys.readouterr().out
     assert "PASS  a" in out and "FAIL  b  (reply contains 'no')" in out and "1/2 passed (50%)" in out
+
+
+def test_fact_expectations_and_setup_files(tmp_path):
+    checks = case_checks({"facts_not_contain": ["3 December"], "max_facts": 1},
+                         fake_turn(), ["Kiran's birthday is 5 December", "Kiran is vegetarian"])
+    assert checks == {"no fact has '3 December'": True, "at most 1 facts": False}
+
+    tracer = Tracer(tmp_path / "traces.db")
+    seen = {}
+
+    class FileAgent(ScriptedAgent):
+        def respond(self, message, **kw):
+            seen["file"] = (self.home / "workspace" / "notes" / "a.md").read_text()
+            return super().respond(message, **kw)
+
+    def factory(home, tr):
+        agent = FileAgent(home, tr, {})
+        agent.home = home
+        return agent
+    run = run_eval([{"id": "f", "message": "hi", "setup_files": {"notes/a.md": "hello"}}],
+                   factory, tracer, "d", "m")
+    assert run["passed"] == 1 and seen["file"] == "hello"
+    bad = run_eval([{"id": "x", "message": "hi", "setup_files": {"../escape.md": "no"}}],
+                   factory, tracer, "d", "m")
+    assert "outside the workspace" in bad["results"][0]["error"]
+
+
+def test_recalls_checks_what_the_gate_retrieved():
+    turn = fake_turn(spans=[{"kind": "gate", "name": "memory recall",
+                             "data": {"retrieve": True, "facts": ["The user is allergic to peanuts."]}}])
+    checks = case_checks({"recalls": ["peanuts", "Pune"]}, turn, [])
+    assert checks == {"recalled 'peanuts'": True, "recalled 'Pune'": False}
+    assert case_checks({"recalls": ["x"]}, fake_turn(spans=[]), []) == {"recalled 'x'": False}
+
+
+def test_repeat_suffixes_ids():
+    from ops.evals import repeat
+    cases = [{"id": "a", "message": "x"}, {"id": "b", "message": "y"}]
+    assert repeat(cases, 1) == cases
+    assert [c["id"] for c in repeat(cases, 3)] == ["a#1", "a#2", "a#3", "b#1", "b#2", "b#3"]
+
+
+def test_judge_sees_visuals():
+    turn = {"spans": [
+        {"kind": "tool", "name": "show_chart", "ok": True, "data": {"args": {
+            "type": "bar", "title": "VRAM", "labels": ["weights", "kv"], "y_label": "GB",
+            "series": [{"name": "GB", "values": [19, 3.5]}]}}},
+        {"kind": "tool", "name": "show_table", "ok": True, "data": {"args": {
+            "title": "Engines", "columns": ["engine", "tok/s"], "rows": [["vllm", 40], ["sglang", 45]]}}},
+        {"kind": "tool", "name": "show_diagram", "ok": True, "data": {"args": {
+            "title": "Flow", "svg": "<svg><text x='1'>prefill</text><text>decode</text></svg>"}}},
+        {"kind": "tool", "name": "show_chart", "ok": False, "data": {"args": {"title": "broken"}}},
+        {"kind": "tool", "name": "remember", "ok": True, "data": {"args": {"fact": "x"}}},
+    ]}
+    summary = visual_summary(turn)
+    assert "bar chart 'VRAM' (y: GB)" in summary and "weights=19, kv=3.5" in summary
+    assert "table 'Engines': engine | tok/s" in summary and "sglang | 45" in summary
+    assert "diagram 'Flow', labels: prefill, decode" in summary
+    assert "broken" not in summary                      # a failed call showed nothing
+    assert visual_summary({"spans": []}) == "none"
+
+    client = FakeClient(small={"score": 4, "reason": "good"})
+    judge(client, "m", "q", "a", visuals=summary)
+    prompt = client.small_requests[0]["messages"][0]["content"]
+    assert "weights=19" in prompt

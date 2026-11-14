@@ -135,3 +135,13 @@ def test_cache_totals_and_old_database_migration(tmp_path):
     row = turn.finish("ok")
     assert row["cache_read_tokens"] == 900
     assert tracer.stats()["cache_hit_rate"] == pytest.approx(0.9)
+
+
+def test_start_markers_go_live_but_not_into_the_trace(tracer):
+    live = []
+    turn = tracer.start("x", listener=lambda kind, data: live.append(kind))
+    turn.notify("llm_start", name="model call 1")
+    turn.notify("tool_start", name="remember")
+    turn.notify("tool", name="remember", ms=3)
+    assert live == ["llm_start", "tool_start", "tool"]
+    assert [s["kind"] for s in tracer.spans(turn.id)] == ["tool"]

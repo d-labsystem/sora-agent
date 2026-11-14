@@ -9,3 +9,4 @@
 {"id": "searches-the-web", "message": "What is the latest stable version of Python? Check the web.", "expect": {"tools": ["web_search"], "judge_min": 0.75}, "criteria": "Names a specific version found on the web, with a source."}
 {"id": "multi-turn-pronoun", "messages": ["My colleague Meera is great at SQL.", "What is she good at?"], "expect": {"reply_contains": ["SQL"]}}
 {"id": "follows-a-revision", "messages": ["What's 17 times 3?", "Now do 17 times 4."], "expect": {"reply_contains": ["68"], "no_tools": ["search_memory"]}}
+{"id": "recalls-by-meaning", "setup_facts": ["Aryan is allergic to peanuts", "Aryan goes to the gym on Tuesdays"], "message": "Can I have a Snickers bar as a snack?", "expect": {"reply_contains": ["peanut"], "gate": {"retrieve": true}}}

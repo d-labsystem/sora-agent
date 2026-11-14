@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from memory.skills import SkillLibrary
-from memory.store import MemoryStore
+from memory.store import DUPLICATE, RELATED, MemoryStore
 from tools.registry import Tool, ToolError, ToolRegistry
 
 MAX_FACT = 500
@@ -44,8 +44,13 @@ def builtin_tools(store: MemoryStore, skills: SkillLibrary, context: TurnContext
             raise ToolError("fact is empty")
         if len(fact) > MAX_FACT:
             raise ToolError(f"keep facts under {MAX_FACT} characters: one fact per call")
+        closest = store.closest_fact(fact)
         if not store.add_fact(fact, source=f"remember:{context.turn_id or '-'}"):
-            return f"Already known: {fact}"
+            known = closest[1] if closest and closest[0] >= DUPLICATE else fact
+            return f"Already known, not saved again: {known}"
+        if closest and closest[0] >= RELATED:
+            return (f"Remembered: {fact}\nA related fact is also stored: {closest[1]}\n"
+                    "If the new one replaces it, forget the old one.")
         return f"Remembered: {fact}"
 
     def search_memory(query: str) -> str:

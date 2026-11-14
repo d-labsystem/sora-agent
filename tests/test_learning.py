@@ -42,7 +42,7 @@ def test_reflection_saves_lessons_with_provenance(lessons):
     assert "ERROR: Invalid date" in prompt and "tool_error" in prompt
     row = lessons.list()[-1]
     assert row["tool"] == "calendar__create" and row["source_turn"] == "t1" and row["signal"] == "tool_error"
-    assert [k for k, _ in events] == ["llm", "learning"]
+    assert [k for k, _ in events] == ["llm_start", "llm", "learning"]
 
 
 def test_correction_shows_the_corrected_reply(lessons):

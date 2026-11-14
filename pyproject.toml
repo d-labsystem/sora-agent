@@ -5,6 +5,7 @@ description = "A local personal AI assistant: harness, loop, memory, tools and o
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=2.6",
+    "fastembed>=0.9.1",
     "mcp>=2.3",
     "python-dotenv>=1.0",
 ]

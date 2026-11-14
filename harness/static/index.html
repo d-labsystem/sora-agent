@@ -16,6 +16,7 @@
       <button data-tab="evals">Evals</button>
       <button data-tab="tools">Tools</button>
     </nav>
+    <span id="live" class="live-dot" title="Connecting…"></span>
     <div class="model" id="model"></div>
   </header>
 
@@ -27,16 +28,29 @@
         <ul id="session-list"></ul>
       </aside>
       <div class="conversation">
-        <div id="messages" class="messages">
-          <div class="empty" id="empty-chat">
-            <h2>Ask sora anything</h2>
-            <p>It remembers across chats, uses tools and the web, and learns from 👎.</p>
+        <div class="chat-area">
+          <div id="messages" class="messages">
+            <div class="empty" id="empty-chat">
+              <h2>Ask sora anything</h2>
+              <p>It remembers across chats, uses tools and the web, draws charts and tables, and learns from 👎.<br>
+                 Watch each message move through the system in the diagram below.</p>
+            </div>
           </div>
+          <form id="composer">
+            <textarea id="input" rows="1" placeholder="Message sora…  (Enter to send, Shift+Enter for a new line)"></textarea>
+            <button type="submit" class="primary" id="send">Send</button>
+          </form>
         </div>
-        <form id="composer">
-          <textarea id="input" rows="1" placeholder="Message sora…  (Enter to send, Shift+Enter for a new line)"></textarea>
-          <button type="submit" class="primary" id="send">Send</button>
-        </form>
+        <div id="divider" class="divider" role="separator" aria-orientation="horizontal" title="Drag to resize"></div>
+        <section id="flow-pane" class="flow-pane">
+          <header>
+            <strong>How sora is handling it</strong>
+            <span id="flow-status" class="flow-status muted"></span>
+            <span class="flow-legend"><i class="lg-active"></i>now <i class="lg-visited"></i>this turn</span>
+            <button id="flow-toggle" class="link" title="Hide or show the diagram">▾</button>
+          </header>
+          <div id="flow" class="flow-box"></div>
+        </section>
       </div>
       <aside class="live">
         <h3>This turn</h3>
@@ -107,6 +121,8 @@
   </main>
 
   <div id="toast" class="toast"></div>
+  <script src="/static/render.js"></script>
+  <script src="/static/flow.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -97,7 +97,9 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 MIGRATIONS = {"turns": {"cache_read_tokens": "INTEGER DEFAULT 0",
                         "cache_write_tokens": "INTEGER DEFAULT 0"}}
 
-LIVE_ONLY = {"text"}        # streamed text deltas go to the UI, not the database
+# Sent to the live UI but not stored: text deltas, and "started" markers (the
+# span written when the step ends already records its start time and duration).
+LIVE_ONLY = {"text", "llm_start", "tool_start"}
 MAX_VALUE = 4000            # characters per string stored in a span
 
 

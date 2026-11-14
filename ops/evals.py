@@ -19,7 +19,8 @@ Datasets are JSONL files in evals/, one case per line:
      "criteria": "Answers with the name, briefly."}
 
 A case may use "messages": [...] for a multi-turn conversation; checks apply
-to the last turn. Expectation keys are listed in EXPECT_KEYS below.
+to the last turn. "setup_files": {"name.md": "text"} puts files in the case's
+workspace before it runs. Expectation keys are listed in EXPECT_KEYS below.
 
 The runner gives every case a fresh, empty home folder, so cases can't leak
 memory into each other or into your real memory. Their traces go into the
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 import uuid
@@ -55,7 +57,10 @@ EXPECT_KEYS = {
     "reply_not_contains": "list: none appears in the reply",
     "no_tool_errors":     "bool: no tool call failed",
     "gate":               'object: e.g. {"retrieve": true} or {"correction": true}',
+    "recalls":            "list: each appears in a fact the gate put in the prompt (retrieval, before the model runs)",
     "facts_contain":      "list: each appears in some saved fact after the turn",
+    "facts_not_contain":  "list: none appears in any saved fact (forgotten or replaced)",
+    "max_facts":          "number: at most this many facts saved in total (catches duplicates)",
     "max_cost_usd":       "number: the turn cost at most this",
     "judge_min":          "number 0-1: the LLM judge's score is at least this",
 }
@@ -111,9 +116,16 @@ def case_checks(expect: dict, turn: dict, facts: list[str]) -> dict[str, bool]:
         out["no tool errors"] = not turn.get("tool_errors")
     for key, want in (expect.get("gate") or {}).items():
         out[f"gate {key}={want}"] = _gate(turn).get(key) == want
+    recalled = [f.lower() for f in _gate(turn).get("facts") or []]
+    for text in expect.get("recalls", []):
+        out[f"recalled {text!r}"] = any(text.lower() in f for f in recalled)
     lowered = [f.lower() for f in facts]
     for text in expect.get("facts_contain", []):
         out[f"remembered {text!r}"] = any(text.lower() in f for f in lowered)
+    for text in expect.get("facts_not_contain", []):
+        out[f"no fact has {text!r}"] = not any(text.lower() in f for f in lowered)
+    if "max_facts" in expect:
+        out[f"at most {expect['max_facts']} facts"] = len(facts) <= expect["max_facts"]
     if "max_cost_usd" in expect:
         out[f"cost <= ${expect['max_cost_usd']}"] = (turn.get("cost_usd") or 0) <= expect["max_cost_usd"]
     return out
@@ -141,6 +153,10 @@ User message:
 
 Tools used: {tools}
 
+Visuals shown to the user next to the reply (charts, tables and diagrams
+render beside the text, so a reply may point to them instead of repeating them):
+{visuals}
+
 Reply:
 {reply}
 
@@ -149,13 +165,43 @@ Give the score and one or two sentences of reason, naming the main issue if any.
 DEFAULT_CRITERIA = "Correct, directly answers the request, appropriately brief, no invented facts."
 
 
+def visual_summary(turn: dict, max_rows: int = 12) -> str:
+    """What the user saw beside the reply, as text the judge can read: each
+    chart's points, each table's rows, each diagram's labels. Built from the
+    visual tools' arguments in the turn's spans."""
+    lines = []
+    for span in turn.get("spans", []):
+        if span["kind"] != "tool" or not span.get("ok", True):
+            continue
+        args = (span.get("data") or {}).get("args") or {}
+        title = args.get("title", "untitled")
+        if span["name"] == "show_chart":
+            lines.append(f"- {args.get('type', '')} chart '{title}'"
+                         + (f" (y: {args['y_label']})" if args.get("y_label") else ""))
+            labels = args.get("labels") or []
+            for series in args.get("series") or []:
+                points = ", ".join(f"{l}={v}" for l, v in zip(labels, series.get("values") or []))
+                lines.append(f"  {series.get('name') or 'values'}: {points}")
+        elif span["name"] == "show_table":
+            rows = args.get("rows") or []
+            lines.append(f"- table '{title}': " + " | ".join(map(str, args.get("columns") or [])))
+            lines += ["  " + " | ".join(map(str, row)) for row in rows[:max_rows]]
+            if len(rows) > max_rows:
+                lines.append(f"  ... {len(rows) - max_rows} more rows")
+        elif span["name"] == "show_diagram":
+            labels = [t.strip() for t in re.findall(r"<text[^>]*>([^<]+)</text>", args.get("svg", ""))]
+            lines.append(f"- diagram '{title}'" + (f", labels: {', '.join(labels[:30])}" if labels else ""))
+    return "\n".join(lines) or "none"
+
+
 def judge(client, model: str, message: str, reply: str, criteria: str | None = None,
-          tools: list[str] | None = None, notify=None) -> dict:
+          tools: list[str] | None = None, notify=None, visuals: str = "none") -> dict:
     """Score 0-1 (from a 1-5 grade) with a reason. Raises on failure."""
     answer = ask_json(client, model, JUDGE_PROMPT.format(
         criteria=criteria or DEFAULT_CRITERIA, message=message[:4000],
-        tools=", ".join(tools or []) or "none", reply=(reply or "(no reply)")[:8000]),
-        JUDGE_FORMAT, notify, name="judge", max_tokens=1024)
+        tools=", ".join(tools or []) or "none", visuals=visuals[:4000],
+        reply=(reply or "(no reply)")[:8000]),
+        JUDGE_FORMAT, notify, name="judge", max_tokens=4096)   # long replies get long reasons
     return {"score": (answer["score"] - 1) / 4, "grade": answer["score"], "reason": answer["reason"]}
 
 
@@ -181,6 +227,13 @@ def load_cases(path: Path) -> list[dict]:
             raise ValueError(f"{path}:{n}: unknown expectations {sorted(unknown)}")
         cases.append(case)
     return cases
+
+
+def repeat(cases: list[dict], times: int) -> list[dict]:
+    """Each case `times` times, ids suffixed #1, #2...; one run then shows the spread."""
+    if times <= 1:
+        return cases
+    return [{**c, "id": f"{c['id']}#{i}"} for c in cases for i in range(1, times + 1)]
 
 
 def trace_to_case(turn: dict) -> dict:
@@ -219,6 +272,13 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
             agent = factory(Path(home), tracer)
             for fact in case.get("setup_facts", []):
                 agent.store.add_fact(fact, source="eval-setup")
+            for name, content in (case.get("setup_files") or {}).items():
+                workspace = (Path(home) / "workspace").resolve()
+                file = (workspace / name).resolve()
+                if workspace not in file.parents:
+                    raise ValueError(f"setup file {name!r} is outside the workspace")
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_text(content, encoding="utf-8")
             session = None
             turn: dict = {}
             spent = 0.0                        # every turn of the case, not just the last
@@ -231,7 +291,8 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
             verdict = None
             if "judge_min" in case.get("expect", {}):
                 verdict = judge(client, judge_model, turn["message"], turn.get("reply") or "",
-                                case.get("criteria"), sorted(_called(turn)))
+                                case.get("criteria"), sorted(_called(turn)),
+                                visuals=visual_summary(turn))
                 tracer.set_judge(turn["id"], verdict["score"], verdict["reason"])
                 checks[f"judge >= {case['expect']['judge_min']}"] = \
                     verdict["score"] >= case["expect"]["judge_min"]
@@ -268,23 +329,59 @@ def run_eval(cases: list[dict], factory: AgentFactory, tracer: Tracer, dataset: 
     return run
 
 
+def rejudge(run_id: str, cases: list[dict], tracer: Tracer, client, judge_model: str) -> list[dict]:
+    """Grade an old run's replies again with the current judge, without rerunning
+    the agent: the replies and visuals are already in the traces. Read-only, so
+    the stored scores stay as they were and the two can be compared."""
+    run = tracer.eval_run(run_id)
+    if run is None:
+        raise ValueError(f"no eval run {run_id!r}")
+    by_id = {c["id"]: c for c in cases}
+    out = []
+    for result in run["results"]:
+        case = by_id.get(result["id"].split("#")[0])
+        turn = tracer.turn(result["turn_id"]) if result.get("turn_id") else None
+        if case is None or turn is None or "judge_min" not in case.get("expect", {}):
+            continue
+        old = (result.get("judge") or {}).get("grade")
+        try:
+            verdict = judge(client, judge_model, turn["message"], turn.get("reply") or "",
+                            case.get("criteria"), sorted(_called(turn)), visuals=visual_summary(turn))
+        except Exception as exc:          # one failed grade shouldn't lose the others
+            out.append({"id": result["id"], "old": old, "new": None, "reason": f"judge failed: {exc}"})
+            continue
+        out.append({"id": result["id"], "old": old, "new": verdict["grade"], "reason": verdict["reason"]})
+    return out
+
+
 def main(argv: list[str] | None = None, factory: AgentFactory | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m ops.evals", description="Run an eval dataset.")
     parser.add_argument("dataset", type=Path)
     parser.add_argument("--min-pass", type=float, default=0.0,
                         help="exit with an error if the pass rate is below this (0-1)")
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="run every case N times: the agent isn't deterministic, so one run can mislead")
+    parser.add_argument("--label", default="",
+                        help="shown next to the dataset name, e.g. 'embeddings off', to tell runs apart")
+    parser.add_argument("--rejudge", metavar="RUN_ID",
+                        help="grade that run's replies again with the current judge; the agent doesn't run")
     args = parser.parse_args(argv)
 
     from harness.app import eval_setup          # imported late: the harness imports this module
     tracer, client, model, judge_model, default_factory = eval_setup()
-    cases = load_cases(args.dataset)
+    if args.rejudge:
+        for r in rejudge(args.rejudge, load_cases(args.dataset), tracer, client, judge_model):
+            print(f"{r['id']}: {r['old']} -> {r['new']}  {r['reason']}")
+        return 0
+    cases = repeat(load_cases(args.dataset), args.repeat)
 
     def show(r: dict) -> None:
         failed = [name for name, ok in r["checks"].items() if not ok]
         mark = "PASS" if r["passed"] else "FAIL"
         print(f"{mark}  {r['id']}" + (f"  ({r.get('error') or ', '.join(failed)})" if not r["passed"] else ""))
 
-    run = run_eval(cases, factory or default_factory, tracer, args.dataset.name, model,
+    name = f"{args.dataset.name} ({args.label})" if args.label else args.dataset.name
+    run = run_eval(cases, factory or default_factory, tracer, name, model,
                    client, judge_model, show)
     print(f"\n{run['passed']}/{run['cases']} passed ({run['pass_rate']:.0%}), "
           f"cost ${run['cost_usd']:.4f}, run {run['id']}")

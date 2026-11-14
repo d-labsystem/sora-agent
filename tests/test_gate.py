@@ -38,8 +38,8 @@ def test_rewritten_query_finds_the_fact(store):
     assert "Tell me about Priya" in client.small_requests[0]["messages"][0]["content"]
     assert client.small_requests[0]["output_config"]["format"]["type"] == "json_schema"
     kinds = [k for k, _ in events]
-    assert kinds == ["llm", "gate"]
-    assert events[0][1]["name"] == "retrieval gate" and events[0][1]["ok"]
+    assert kinds == ["llm_start", "llm", "gate"]
+    assert events[1][1]["name"] == "retrieval gate" and events[1][1]["ok"]
 
 
 def test_empty_query_falls_back_to_message(store):
@@ -56,7 +56,7 @@ def test_failure_fails_open(store):
                     lambda kind, **kw: events.append((kind, kw)))
     assert result.failed and result.retrieve and not result.correction
     assert result.facts == ["Alex prefers morning meetings"]
-    assert events[0][0] == "llm" and events[0][1]["ok"] is False
+    assert events[1][0] == "llm" and events[1][1]["ok"] is False
 
 
 def test_refusal_is_a_failure():

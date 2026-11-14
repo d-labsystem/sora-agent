@@ -54,6 +54,7 @@ class LoopResult:
     stop_reason: str = ""
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    server_calls: list[dict[str, Any]] = field(default_factory=list)   # web_search, web_fetch
 
     @property
     def tool_errors(self) -> list[dict[str, Any]]:
@@ -118,6 +119,8 @@ def _record(result: LoopResult, response, notify: Notify, iteration: int, ms: in
     for block in response.content:
         if block.type == "server_tool_use":
             notify("server_tool", name=block.name, input=block.input)
+            if block.name in ("web_search", "web_fetch"):
+                result.server_calls.append({"tool": block.name, "args": block.input})
         elif block.type.endswith("_tool_result") and block.type != "tool_result":
             notify("server_result", name=block.type, **_server_results(block))
 
@@ -132,6 +135,7 @@ def run_loop(client, model: str, system: System, messages: list, tools: ToolRegi
     for iteration in range(1, max_iterations + 1):
         result.iterations = iteration
         started = time.perf_counter()
+        notify("llm_start", name=f"model call {iteration}")      # live only: "this is running now"
         response = _call_model(client, model, effort, system, messages, schemas, notify)
         _record(result, response, notify, iteration, int((time.perf_counter() - started) * 1000))
         result.stop_reason = response.stop_reason
@@ -157,6 +161,7 @@ def run_loop(client, model: str, system: System, messages: list, tools: ToolRegi
         tool_results = []
         for call in calls:
             started = time.perf_counter()
+            notify("tool_start", name=call.name)
             output, is_error = tools.execute(call.name, call.input)
             ms = int((time.perf_counter() - started) * 1000)
             result.tool_calls.append({"tool": call.name, "args": call.input,
@@ -170,6 +175,7 @@ def run_loop(client, model: str, system: System, messages: list, tools: ToolRegi
 
     result.limit_reached = True
     started = time.perf_counter()
+    notify("llm_start", name=f"model call {max_iterations + 1}")
     # The note goes after the cached system blocks, so the cache still hits.
     final_system = (system + [{"type": "text", "text": LIMIT_NOTE}] if isinstance(system, list)
                     else f"{system}\n\n{LIMIT_NOTE}")

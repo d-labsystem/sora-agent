@@ -199,3 +199,23 @@ def test_web_limits_reach_the_request(tmp_path, monkeypatch):
     assert tools["web_search"]["max_uses"] == 2
     assert tools["web_fetch"]["max_uses"] == 4 and "max_content_tokens" not in tools["web_fetch"]
     assert agent.status()["web_limits"] == {"searches": 2, "fetches": 4, "fetch_tokens": 0}
+
+
+def test_action_note_and_history(tmp_path):
+    from harness.app import action_note
+    note = action_note([{"tool": "remember", "args": {"fact": "x" * 200}, "output": "Remembered", "is_error": False},
+                        {"tool": "forget", "args": {"text": "y"}, "output": "nope", "is_error": True}],
+                       [{"tool": "web_search", "args": {"query": "vllm"}}])
+    assert note.startswith("[Recorded by the app, not written by you.")
+    assert "remember(fact='" in note and "…" in note and "forget(text='y') -> failed: nope" in note
+    assert "web_search('vllm')" in note
+    assert action_note([], []) is None
+
+    agent, client, _ = make(tmp_path, [
+        message(tool_use("remember", {"fact": "Aryan likes chai"}), stop_reason="tool_use"),
+        message(text("Saved!")), message(text("You're welcome")),
+    ])
+    first = agent.respond("remember I like chai")
+    agent.respond("thanks", session_id=first["session_id"])
+    previous = client.requests[-1]["messages"][1]["content"]
+    assert previous.startswith("Saved!\n\n[Recorded by the app") and "remember(fact='Aryan likes chai')" in previous

@@ -26,9 +26,10 @@ def server(tmp_path):
 
     agent = Sora(Settings(home=tmp_path), FakeClient(script, small=SmallModel(
         lessons=[{"situation": "s", "lesson": "Be concrete", "tool": ""}])), connect_mcp=False)
-    srv = make_server(agent, 0)
+    srv = make_server(agent, 0, watch_interval=0.1)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{srv.server_address[1]}", agent
+    srv.dashboard.close()
     srv.shutdown()
     srv.server_close()
 
@@ -148,3 +149,38 @@ def test_status(server):
     base, _ = server
     status = json.loads(call(base, "/api/status")[2])
     assert status["model"] == "claude-opus-5-5" and status["skills"]
+
+
+def test_event_stream_pushes_changes(server):
+    """Hold /api/events open like the browser does, then chat: notices arrive."""
+    import http.client
+    base, agent = server
+    port = int(base.rsplit(":", 1)[1])
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request("GET", "/api/events")
+    res = conn.getresponse()
+    assert res.status == 200 and res.getheader("Content-Type") == "text/event-stream"
+    topics, ready = [], threading.Event()
+
+    def read():
+        for raw in res:
+            line = raw.decode().strip()
+            if line.startswith("data: "):
+                topics.append(json.loads(line[6:])["topic"])
+                ready.set()
+            if {"sessions", "turns", "memory"} <= set(topics):
+                return
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    assert ready.wait(5) and topics[0] == "hello"
+    call(base, "/api/chat", {"message": "please remember I like chai"})   # new session, turn, and a fact
+    reader.join(5)
+    assert {"sessions", "turns", "memory"} <= set(topics)
+    conn.close()
+
+
+def test_event_stream_respects_origin(server):
+    base, _ = server
+    with pytest.raises(HTTPError) as err:
+        call(base, "/api/events", headers={"Origin": "https://evil.com"})
+    assert err.value.code == 403

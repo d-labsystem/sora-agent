@@ -45,18 +45,28 @@ function showTab(name) {
 const chat = { session: null, busy: false };
 
 loaders.chat = loadSessions;
+let shownSessions = "";
+const ago = (iso) => {
+  const s = (Date.now() - new Date(iso.replace(" ", "T") + "Z")) / 1000;
+  return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
+};
+// Redraws only when something changed, so polling never flickers the list.
 async function loadSessions() {
-  const list = clear($("#session-list"));
-  for (const s of await api("/api/sessions")) {
-    list.append(el("li", { class: s.id === chat.session ? "active" : "", title: s.title,
-      onclick: () => openSession(s.id) }, s.title));
-  }
+  let sessions;
+  try { sessions = await api("/api/sessions"); } catch { return; }
+  const key = JSON.stringify([chat.session, sessions.map((s) => [s.id, s.title, s.updated_at])]);
+  if (key === shownSessions) return;
+  shownSessions = key;
+  clear($("#session-list")).append(...sessions.map((s) => el("li", {
+    class: s.id === chat.session ? "active" : "", title: s.title, onclick: () => openSession(s.id) },
+    el("span", { class: "s-title" }, s.title), el("span", { class: "s-time" }, ago(s.updated_at)))));
 }
+
 async function openSession(id) {
   chat.session = id;
   const box = clear($("#messages"));
   const rows = await api(`/api/sessions/${id}`);
-  for (const m of rows) box.append(m.role === "user" ? userMsg(m.content) : botMsg(m.content, m.turn_id));
+  for (const m of rows) box.append(m.role === "user" ? userMsg(m.content) : botMsg(m.content, m.turn_id, m.visuals));
   box.scrollTop = box.scrollHeight;
   loadSessions();
 }
@@ -70,12 +80,16 @@ $("#new-chat").addEventListener("click", () => {
 function userMsg(text) {
   return el("div", { class: "msg user" }, el("div", { class: "who" }, "you"), el("div", { class: "body" }, text));
 }
-function botMsg(text, turnId) {
+function botMsg(text, turnId, visuals = []) {
+  const body = el("div", { class: "body" });
+  setBody(body, text || "");
   const node = el("div", { class: "msg bot" }, el("div", { class: "who" }, "sora"),
-    el("div", { class: "chips" }), el("div", { class: "body" }, text || ""));
+    el("div", { class: "chips" }), body, el("div", { class: "visuals" }, (visuals || []).map(render.visual)));
   if (turnId) node.append(feedbackBar(turnId));
   return node;
 }
+// Replies are Markdown. render.markdown escapes all text before adding tags.
+function setBody(body, text) { body.innerHTML = render.markdown(text); }
 function feedbackBar(turnId) {
   const bar = el("div", { class: "meta" });
   const up = el("button", { class: "link", title: "Good answer" }, "👍");
@@ -109,17 +123,20 @@ async function send() {
   box.querySelector(".empty")?.remove();
   box.append(userMsg(text));
   const bot = botMsg("", null);
-  const body = bot.querySelector(".body"), chips = bot.querySelector(".chips");
+  const body = bot.querySelector(".body"), chips = bot.querySelector(".chips"), visuals = bot.querySelector(".visuals");
   body.textContent = "…";
+  let frame = 0;
+  const paint = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; setBody(body, streamed); box.scrollTop = box.scrollHeight; }); };
   box.append(bot); box.scrollTop = box.scrollHeight;
   const steps = clear($("#live-steps")); clear($("#live-summary"));
   let streamed = "";
 
   const step = (k, text, cls) => { steps.append(el("li", { class: cls }, el("span", { class: "k" }, k), " ", text)); };
   const handle = (ev) => {
+    flow.event(ev.kind, ev);
     switch (ev.kind) {
-      case "turn": chat.session = ev.session_id; step("turn", ev.turn_id); break;
-      case "text": streamed += ev.delta; body.textContent = streamed; box.scrollTop = box.scrollHeight; break;
+      case "turn": chat.session = ev.session_id; step("turn", ev.turn_id); loadSessions(); break;
+      case "text": streamed += ev.delta; paint(); break;
       case "llm": step("llm", `${ev.name} · ${ms(ev.ms)} · ${money(ev.cost_usd)}`, ev.ok ? "" : "bad"); break;
       case "gate":
         step("memory", ev.retrieve ? `searched "${ev.query}" → ${ev.facts.length} facts, ${ev.episodes.length} episodes` : "no search needed");
@@ -133,18 +150,20 @@ async function send() {
       case "tool":
         step("tool", `${ev.name} ${ev.ok ? "✓" : "✗"} ${ms(ev.ms)}`, ev.ok ? "" : "bad");
         chips.append(el("span", { class: "chip" + (ev.ok ? "" : " bad") }, `${ev.ok ? "🔧" : "⚠"} ${ev.name}`));
+        if (ev.ok && ev.name.startsWith("show_")) { visuals.append(render.visual({ tool: ev.name, ...ev.args })); box.scrollTop = box.scrollHeight; }
         break;
       case "server_tool": {
         const q = ev.input?.query || ev.input?.url || "";
         step("web", `${ev.name}: ${q}`); chips.append(el("span", { class: "chip" }, `🌐 ${q.slice(0, 40)}`)); break;
       }
-      case "reply": if (ev.reply != null) { streamed = ev.reply; body.textContent = ev.reply || "(no reply)"; } break;
+      case "reply": if (ev.reply != null) { streamed = ev.reply || "(no reply)"; setBody(body, streamed); } break;
       case "learning": for (const l of ev.lessons || []) step("learned", l.lesson, "ok"); break;
       case "memory": if (ev.facts?.length) step("saved", `${ev.facts.length} fact(s) to long-term memory`, "ok"); break;
       case "error": step("error", ev.error, "bad"); break;
       case "done":
         if (ev.status === "error") { bot.classList.add("error"); body.textContent = ev.error || "Something went wrong."; }
         bot.append(feedbackBar(ev.id));
+        loadSessions();
         $("#live-summary").append(el("div", {}, `${ev.status} · ${ms(ev.latency_ms)} · ${money(ev.cost_usd)} · ${ev.input_tokens} in + ${ev.cache_read_tokens || 0} cached / ${ev.output_tokens} out`));
         break;
     }
@@ -194,7 +213,7 @@ async function loadTraces() {
   clear($("#stat-cards")).append(...cards.map(([l, v]) => el("div", { class: "card" }, el("div", { class: "label" }, l), el("div", { class: "value" }, v))));
   const rows = clear($("#trace-rows"));
   for (const t of turns) {
-    rows.append(el("tr", { "data-id": t.id, onclick: () => openTrace(t.id, false) },
+    rows.append(el("tr", { "data-id": t.id, class: t.id === selectedTrace ? "selected" : "", onclick: () => openTrace(t.id, false) },
       el("td", {}, when(t.started_at)), el("td", { class: "msgcell", title: t.message }, t.message),
       el("td", {}, el("span", { class: "badge " + t.status }, t.status)),
       el("td", { class: "num" }, ms(t.latency_ms)), el("td", { class: "num" }, money(t.cost_usd)),
@@ -203,7 +222,9 @@ async function loadTraces() {
   if (!turns.length) rows.append(el("tr", {}, el("td", { colspan: 6, class: "muted" }, "No turns yet.")));
 }
 
+let selectedTrace = null;
 async function openTrace(id, switchTab = true) {
+  selectedTrace = id;
   if (switchTab) { showTab("traces"); }
   document.querySelectorAll("#trace-rows tr").forEach((r) => r.classList.toggle("selected", r.dataset.id === id));
   const t = await api(`/api/turns/${id}`);
@@ -214,6 +235,7 @@ async function openTrace(id, switchTab = true) {
     el("div", { class: "detail-head" },
       el("span", { class: "badge " + t.status }, t.status), el("span", { class: "grow muted small" },
         `${t.source} · ${t.model || ""} · ${ms(t.latency_ms)} · ${money(t.cost_usd)} · ${t.input_tokens} in + ${t.cache_read_tokens || 0} cached / ${t.output_tokens} out · ${t.iterations} steps`),
+      action("▶ Replay on diagram", () => { showTab("chat"); flow.replay(t); }),
       action("Judge", async () => { try { const v = await api("/api/judge", { method: "POST", body: { turn_id: id } }); toast(`Judge: ${v.grade}/5 — ${v.reason}`); openTrace(id, false); } catch (e) { toast(e.message); } }),
       action("Add to evals", async () => { try { const c = await api("/api/to-eval", { method: "POST", body: { turn_id: id } }); toast(`Added case ${c.id} to mine.jsonl`); } catch (e) { toast(e.message); } })),
     el("div", { class: "muted small" }, "Message"), el("div", { class: "reply" }, t.message),
@@ -275,7 +297,7 @@ async function loadEvals() {
       el("td", { class: "num" }, money(r.cost_usd))));
   }
   if (!data.runs.length) rows.append(el("tr", {}, el("td", { colspan: 4, class: "muted" }, "No runs yet.")));
-  if (data.running) setTimeout(() => document.querySelector("#evals.active") && loadEvals(), 3000);
+
 }
 async function openRun(id) {
   const run = await api(`/api/evals/${id}`);
@@ -304,10 +326,56 @@ async function loadTools() {
   const kv = clear($("#settings"));
   const lim = s.web_limits || {}, n = (v) => v ? String(v) : "no limit";
   for (const [k, v] of [["model", s.model], ["small model", s.small_model], ["effort", s.effort],
+    ["memory search", s.memory_search],
     ["web searches / call", n(lim.searches)], ["web fetches / call", n(lim.fetches)],
     ["tokens per fetch", n(lim.fetch_tokens)], ["home", s.home]]) kv.append(el("dt", {}, k), el("dd", {}, v));
   for (const e of s.skill_errors) kv.append(el("dt", { class: "bad" }, "skill error"), el("dd", {}, e));
 }
+
+// ---------- the diagram pane: mount, resize, collapse (size remembered per browser)
+flow.mount($("#flow"), $("#flow-status"));
+(() => {
+  const pane = $("#flow-pane"), divider = $("#divider"), area = $(".conversation");
+  const store = (k, v) => { try { v === undefined ? (v = localStorage.getItem(k)) : localStorage.setItem(k, v); } catch { v = null; } return v; };
+  const saved = store("sora.flowHeight"); if (saved) pane.style.setProperty("--flow-h", saved);
+  if (store("sora.flowCollapsed") === "1") pane.classList.add("collapsed");
+  $("#flow-toggle").addEventListener("click", () => store("sora.flowCollapsed", pane.classList.toggle("collapsed") ? "1" : "0"));
+  divider.addEventListener("pointerdown", (e) => {
+    divider.setPointerCapture(e.pointerId); divider.classList.add("dragging"); pane.classList.remove("collapsed");
+    const move = (m) => {
+      const r = area.getBoundingClientRect();
+      const pct = Math.min(75, Math.max(18, 100 * (r.bottom - m.clientY) / r.height)).toFixed(1) + "%";
+      pane.style.setProperty("--flow-h", pct); store("sora.flowHeight", pct);
+    };
+    const up = () => { divider.classList.remove("dragging"); divider.removeEventListener("pointermove", move); divider.removeEventListener("pointerup", up); };
+    divider.addEventListener("pointermove", move); divider.addEventListener("pointerup", up);
+  });
+})();
+
+// ---------- live updates from the server (Server-Sent Events)
+// The server sends {"topic": ...} when data changes, from any process. We reload
+// only the tab on screen; other tabs load fresh data when you open them anyway.
+const REFRESH = {
+  sessions: { chat: () => loadSessions() },
+  turns: { traces: () => loadTraces(), evals: () => loadEvals() },
+  memory: { memory: () => loadMemory() },
+  evals: { evals: () => loadEvals() },
+};
+const currentTab = () => document.querySelector(".tab.active")?.id;
+function connectEvents() {
+  const dot = $("#live");
+  const events = new EventSource("/api/events");     // the browser reconnects by itself if this drops
+  events.onopen = () => {
+    dot.className = "live-dot on"; dot.title = "Live: updates arrive as they happen";
+    loaders[currentTab()]?.();                        // catch up on anything missed while disconnected
+  };
+  events.onerror = () => { dot.className = "live-dot off"; dot.title = "Reconnecting to the server…"; };
+  events.onmessage = (e) => {
+    const { topic } = JSON.parse(e.data);
+    REFRESH[topic]?.[currentTab()]?.();
+  };
+}
+connectEvents();
 
 // ---------- start
 api("/api/status").then((s) => { $("#model").textContent = s.model; }).catch(() => {});

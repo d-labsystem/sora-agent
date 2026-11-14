@@ -34,6 +34,8 @@ def ask_json(client, model: str, prompt: str, output_format: dict,
     started = time.perf_counter()
     ok = False
     usage = None
+    if notify:
+        notify("llm_start", name=name)        # live only: the diagram shows it running
     try:
         response = client.messages.create(
             model=model, max_tokens=max_tokens,

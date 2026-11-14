@@ -17,6 +17,8 @@ and there's nothing to install. The page is static HTML + JS (harness/static).
     GET  /api/evals[/<run_id>]      datasets and runs, or one run's results
     POST /api/evals/run             {dataset} → runs in the background
     GET  /api/status                model, tools, MCP servers, skills
+    GET  /api/events                server-sent events: {"topic": "sessions" | "turns" |
+                                    "memory" | "evals"} whenever that data changes
 
 Security. The server listens on 127.0.0.1 only, so other machines can't reach
 it. Two more checks stop *websites* you visit from using it through your own
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import queue
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,6 +43,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from harness.app import PROJECT, Sora, create, load_settings
+from harness.events import KEEPALIVE_SECONDS, Hub, Watcher, sse
 from memory.learning import LessonStore
 from memory.store import MemoryStore
 from ops.evals import load_cases, run_eval
@@ -64,7 +68,7 @@ class Dashboard:
     """Everything the handlers need. Reads use their own database connections,
     so the dashboard stays responsive while a turn holds the agent's lock."""
 
-    def __init__(self, agent: Sora):
+    def __init__(self, agent: Sora, watch_interval: float = 1.0):
         self.agent = agent
         path = agent.settings.home / "memory.db"
         self.memory = MemoryStore(path)
@@ -72,6 +76,14 @@ class Dashboard:
         self.read_lock = threading.Lock()
         self.eval_lock = threading.Lock()
         self.eval_running: str | None = None
+        self.hub = Hub()
+        # eval_running lives in memory, not a table, so the watcher is told about it directly
+        self.watcher = Watcher(self.hub, path, agent.tracer.path, watch_interval,
+                               extra=lambda: {"evals": self.eval_running}).start()
+
+    def close(self) -> None:
+        self.watcher.stop()
+        self.hub.close()
 
     # ---- evals
 
@@ -100,7 +112,8 @@ class Dashboard:
         settings = agent.settings
 
         def factory(home: Path, tracer):
-            return Sora(replace(settings, home=home, auto_judge=False), agent.client, tracer=tracer)
+            return Sora(replace(settings, home=home, auto_judge=False), agent.client, tracer=tracer,
+                        embedder=agent.embedder)
 
         def work():
             try:
@@ -200,6 +213,8 @@ def make_handler(dash: Dashboard):
             tracer = agent.tracer
             if name == "status":
                 return self._json(agent.status())
+            if name == "events":
+                return self._events()
             if name == "sessions":
                 with dash.read_lock:
                     if rest:
@@ -232,6 +247,35 @@ def make_handler(dash: Dashboard):
                 return self._json({"datasets": dash.datasets(), "runs": tracer.eval_runs(),
                                    "running": dash.eval_running})
             return self._error(404, "not found")
+
+        def _events(self) -> None:
+            """Hold the connection open and write each notice as it arrives.
+            Runs on this request's own thread (ThreadingHTTPServer), so a tab
+            waiting here never blocks other requests."""
+            q = dash.hub.subscribe()
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(b"retry: 3000\n" + sse({"topic": "hello"}))   # reconnect after 3s if dropped
+                self.wfile.flush()
+                while True:
+                    try:
+                        notice = q.get(timeout=KEEPALIVE_SECONDS)
+                    except queue.Empty:
+                        self.wfile.write(sse(comment="keepalive"))
+                    else:
+                        if notice is None:           # server shutting down
+                            break
+                        self.wfile.write(sse(notice))
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass                                 # the tab closed or reloaded
+            finally:
+                dash.hub.unsubscribe(q)
 
         # ---- POST
 
@@ -314,9 +358,11 @@ def make_handler(dash: Dashboard):
     return Handler
 
 
-def make_server(agent: Sora, port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(Dashboard(agent)))
+def make_server(agent: Sora, port: int, watch_interval: float = 1.0) -> ThreadingHTTPServer:
+    dashboard = Dashboard(agent, watch_interval)
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(dashboard))
     server.daemon_threads = True
+    server.dashboard = dashboard          # so whoever stops the server can stop the watcher
     return server
 
 
@@ -328,6 +374,7 @@ def serve(agent: Sora, port: int) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        server.dashboard.close()        # ends open event streams and the watcher
         server.server_close()
         agent.close()
 
