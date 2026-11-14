@@ -26,6 +26,7 @@ user, and serialising turns keeps memory and session history consistent.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -37,12 +38,14 @@ import anthropic
 from dotenv import load_dotenv
 
 from loop.agent import run_loop
+from loop.providers import Providers, split_model
 from memory.consolidation import consolidate
 from memory.gate import GateResult, recall
 from memory.embeddings import DEFAULT_MODEL, Embedder
 from memory.learning import LessonStore, detect, reflect
 from memory.skills import Skill, SkillLibrary
 from memory.store import MemoryStore
+from ops.pricing import add_prices, known_price
 from ops.evals import append_case, judge, trace_to_case, turn_checks
 from ops.tracing import Tracer
 from tools import workspace_server
@@ -110,6 +113,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
     load_dotenv(home / ".env")
     home.mkdir(parents=True, exist_ok=True)
     d = Settings(home=home)
+    _load_prices()
     return Settings(
         home=home,
         model=os.getenv("SORA_MODEL", d.model),
@@ -130,6 +134,18 @@ def load_settings(home: Path | str | None = None) -> Settings:
         memory_min_similarity=float(os.getenv("SORA_MEMORY_MIN_SIMILARITY", d.memory_min_similarity)),
         models_dir=Path(os.getenv("SORA_MODELS_DIR", str(d.models_dir))).expanduser(),
     )
+
+
+def _load_prices() -> None:
+    """SORA_PRICES adds prices for models sora doesn't know, as JSON:
+    {"gpt-5.1": [1.25, 10.0]} (input, output in dollars per million tokens)."""
+    raw = os.getenv("SORA_PRICES")
+    if not raw:
+        return
+    try:
+        add_prices({m: (float(p[0]), float(p[1])) for m, p in json.loads(raw).items()})
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        log.error("ignoring SORA_PRICES: %s", exc)
 
 
 def explain(exc: Exception) -> str:
@@ -211,7 +227,12 @@ class Sora:
         self.settings = settings
         home = settings.home
         home.mkdir(parents=True, exist_ok=True)
-        self.client = client or anthropic.Anthropic()
+        # Model names may carry a provider prefix (openai:..., hf:..., local:...);
+        # no prefix means Anthropic. The main loop and the small helper calls can
+        # use different providers.
+        self.providers = Providers(client)
+        self.provider, self.model_id = self.providers.get(settings.model)
+        self.small, self.small_id = self.providers.get(settings.small_model)
         if embedder is None and settings.embeddings:
             embedder = Embedder(settings.models_dir, settings.embedding_model)   # loads lazily
         self.embedder = embedder
@@ -226,8 +247,10 @@ class Sora:
         if not self.soul_path.exists():
             self.soul_path.write_text(DEFAULT_SOUL + "\n", encoding="utf-8")
 
+        # web_search/web_fetch run on Anthropic's servers; other providers can't.
         web = web_tools(settings.web_max_searches, settings.web_max_fetches,
-                        settings.web_fetch_max_tokens) if settings.web_tools else []
+                        settings.web_fetch_max_tokens) \
+            if settings.web_tools and self.provider.server_tools else []
         self.registry = ToolRegistry(web)
         register_builtins(self.registry, self.store, self.skills, self.context)
         for tool in visual_tools():
@@ -269,7 +292,7 @@ class Sora:
             notify("turn", name="turn started", turn_id=turn.id, session_id=session_id)
             try:
                 # 3-4. recall and context
-                found = recall(self.store, self.client, s.small_model, session_id, message, notify)
+                found = recall(self.store, self.small, self.small_id, session_id, message, notify)
                 lessons = self.lessons.relevant(message)
                 matched = self.skills.match(message)
                 system = build_system(self.soul_path.read_text(encoding="utf-8"),
@@ -285,7 +308,7 @@ class Sora:
                             {"role": "user", "content": message}]
 
                 # 5. the loop
-                result = run_loop(self.client, s.model, system, messages, self.registry, notify,
+                result = run_loop(self.provider, self.model_id, system, messages, self.registry, notify,
                                   effort=s.effort, max_iterations=s.max_iterations,
                                   tool_notes=tool_notes)
                 status = ("refused" if result.stop_reason == "refusal"
@@ -299,10 +322,10 @@ class Sora:
                                         action_note(result.tool_calls, result.server_calls), visuals)
                 signals = detect(len(result.tool_errors), result.limit_reached, found.correction)
                 if signals:
-                    reflect(self.lessons, self.client, s.small_model, signals, message,
+                    reflect(self.lessons, self.small, self.small_id, signals, message,
                             result.reply, result.tool_calls, turn.id,
                             previous if found.correction else None, notify=notify)
-                consolidate(self.store, self.client, s.small_model, session_id, notify,
+                consolidate(self.store, self.small, self.small_id, session_id, notify,
                             every=s.consolidate_every)
 
                 # 9. checks and finish
@@ -332,7 +355,7 @@ class Sora:
                       "output": sp["data"].get("output"), "is_error": not sp["ok"]}
                      for sp in t["spans"] if sp["kind"] == "tool"]
             with self.lock:
-                lessons = reflect(self.lessons, self.client, self.settings.small_model,
+                lessons = reflect(self.lessons, self.small, self.small_id,
                                   ["thumbs_down"], t["message"], t["reply"] or "", calls,
                                   turn_id, note=note)
         return {"turn_id": turn_id, "feedback": value, "lessons": lessons}
@@ -341,7 +364,7 @@ class Sora:
         t = self.tracer.turn(turn_id)
         tools = sorted({sp["name"] for sp in (t or {}).get("spans", [])
                         if sp["kind"] in ("tool", "server_tool")})
-        verdict = judge(self.client, self.settings.small_model, message, reply, tools=tools,
+        verdict = judge(self.small, self.small_id, message, reply, tools=tools,
                         notify=notify)
         self.tracer.set_judge(turn_id, verdict["score"], verdict["reason"])
         return verdict
@@ -365,6 +388,10 @@ class Sora:
     def status(self) -> dict:
         s = self.settings
         return {"model": s.model, "small_model": s.small_model, "effort": s.effort,
+                "providers": {"main": self.provider.name, "small": self.small.name,
+                              "web_tools": self.provider.server_tools,
+                              "prices_known": [m for m in (self.model_id, self.small_id)
+                                               if known_price(m)]},
                 "memory_search": (f"hybrid ({s.embedding_model})" if self.store.embedder
                                   else "words only"),
                 "web_limits": {"searches": s.web_max_searches, "fetches": s.web_max_fetches,
@@ -387,7 +414,9 @@ def eval_setup():
     builds a fresh agent in each case's empty home folder."""
     settings = load_settings()
     tracer = Tracer(settings.home / "traces.db")
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic() if "anthropic" in {split_model(m)[0] for m in
+                                                       (settings.model, settings.small_model)} else None
+    judge_provider, judge_model = Providers(client).get(settings.small_model)
 
     embedder = Embedder(settings.models_dir, settings.embedding_model) if settings.embeddings else None
 
@@ -395,4 +424,4 @@ def eval_setup():
         return Sora(replace(settings, home=home, auto_judge=False), client, tracer=tr,
                     embedder=embedder)   # one model load for the whole run
 
-    return tracer, client, settings.model, settings.small_model, factory
+    return tracer, judge_provider, settings.model, judge_model, factory

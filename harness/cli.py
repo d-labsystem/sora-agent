@@ -188,7 +188,10 @@ class Chat:
 
 
 def format_status(status: dict) -> str:
+    prov = status.get("providers", {})
     rows = [f"model {status['model']} (small: {status['small_model']}, effort {status['effort']})",
+            f"via   {prov.get('main', '?')} / {prov.get('small', '?')}, web tools "
+            + ("on" if prov.get("web_tools") else "off (Anthropic only)"),
             f"home  {status['home']}", "tools:"]
     rows += [f"  {t['name']:<28} {t['source']}" for t in status["tools"]]
     if status["mcp"]:

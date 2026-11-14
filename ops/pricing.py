@@ -24,6 +24,16 @@ CACHE_WRITE_MULTIPLIER = 1.25
 WEB_SEARCH_USD = 10.0 / 1000   # web search is billed per search, on top of tokens
 
 
+def add_prices(prices: dict[str, tuple[float, float]]) -> None:
+    """Prices for models this table doesn't know (e.g. OpenAI or Hugging Face
+    models), from SORA_PRICES. Provider prefixes are not part of the name."""
+    PRICES.update(prices)
+
+
+def known_price(model: str) -> bool:
+    return model in PRICES
+
+
 def cost(model: str, input_tokens: int, output_tokens: int, web_searches: int = 0,
          cache_read: int = 0, cache_write: int = 0) -> float:
     """Unknown models count as $0 for tokens, so a new model never crashes a turn."""

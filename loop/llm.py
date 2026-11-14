@@ -11,9 +11,9 @@ dashboard can show what each helper call spent, not just the main loop.
 
 from __future__ import annotations
 
-import json
 import time
 
+from loop.providers import NoAnswer, Usage, as_provider
 from ops.pricing import cost
 
 
@@ -27,32 +27,28 @@ def schema(properties: dict, required: list[str] | None = None) -> dict:
         "additionalProperties": False}}
 
 
-def ask_json(client, model: str, prompt: str, output_format: dict,
+def ask_json(provider, model: str, prompt: str, output_format: dict,
              notify=None, name: str = "call", max_tokens: int = 4096) -> dict:
     """One non-streaming call that must return JSON. Raises on refusal,
-    truncation or bad JSON; callers decide how to fail safely."""
+    truncation or bad JSON; callers decide how to fail safely. `provider` is
+    a loop.providers Provider (or a bare Anthropic client)."""
+    provider = as_provider(provider)
     started = time.perf_counter()
     ok = False
-    usage = None
+    usage, served = Usage(), model
     if notify:
         notify("llm_start", name=name)        # live only: the diagram shows it running
     try:
-        response = client.messages.create(
-            model=model, max_tokens=max_tokens,
-            output_config={"effort": "low", "format": output_format},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        usage = response.usage
-        if response.stop_reason in ("refusal", "max_tokens"):
-            raise ValueError(f"no usable answer ({response.stop_reason})")
-        result = json.loads("".join(b.text for b in response.content if b.type == "text"))
+        result, usage, served = provider.ask_json(model, prompt, output_format, max_tokens)
         ok = True
         return result
+    except NoAnswer as exc:
+        usage = exc.usage                     # a cut-off answer is still billed
+        raise
     finally:
         if notify:
-            tokens_in = getattr(usage, "input_tokens", 0) or 0
-            tokens_out = getattr(usage, "output_tokens", 0) or 0
-            notify("llm", name=name, model=model, ok=ok,
+            notify("llm", name=name, model=served, ok=ok,
                    ms=int((time.perf_counter() - started) * 1000),
-                   input_tokens=tokens_in, output_tokens=tokens_out,
-                   cost_usd=cost(model, tokens_in, tokens_out))
+                   input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+                   cost_usd=cost(served, usage.input_tokens, usage.output_tokens,
+                                 cache_read=usage.cache_read))

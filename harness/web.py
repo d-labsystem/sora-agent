@@ -112,13 +112,14 @@ class Dashboard:
         settings = agent.settings
 
         def factory(home: Path, tracer):
-            return Sora(replace(settings, home=home, auto_judge=False), agent.client, tracer=tracer,
+            return Sora(replace(settings, home=home, auto_judge=False), agent.providers.anthropic_client,
+                        tracer=tracer,
                         embedder=agent.embedder)
 
         def work():
             try:
                 run_eval(load_cases(Path(match["path"])), factory, agent.tracer, name,
-                         settings.model, agent.client, settings.small_model)
+                         settings.model, agent.small, agent.small_id)
             finally:
                 with self.eval_lock:
                     self.eval_running = None
