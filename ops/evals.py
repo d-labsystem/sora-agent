@@ -85,6 +85,7 @@ def turn_checks(turn: dict) -> dict[str, bool]:
         "replied": turn.get("status") == "ok" and bool((turn.get("reply") or "").strip()),
         "no_tool_errors": not turn.get("tool_errors"),
         "within_step_limit": turn.get("status") != "limit",
+        "within_budget": turn.get("status") != "budget",
     }
 
 
@@ -283,7 +284,8 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
             turn: dict = {}
             spent = 0.0                        # every turn of the case, not just the last
             for message in case.get("messages") or [case["message"]]:
-                turn = agent.respond(message, session_id=session, source="eval", eval_run=run_id)
+                extra = {"long": True} if case.get("long") else {}   # long task: more steps, a cap
+                turn = agent.respond(message, session_id=session, source="eval", eval_run=run_id, **extra)
                 session = turn.get("session_id")
                 spent += turn.get("cost_usd") or 0
             facts = [f["content"] for f in agent.store.list_facts()]

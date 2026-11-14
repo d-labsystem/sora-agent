@@ -4,7 +4,7 @@ Standard-library HTTP server, no framework: the whole API fits on one screen,
 and there's nothing to install. The page is static HTML + JS (harness/static).
 
     GET  /                          the dashboard
-    POST /api/chat                  {message, session_id} → server-sent events
+    POST /api/chat                  {message, session_id, long?} → server-sent events
     GET  /api/sessions[/<id>]       conversations, and one conversation's messages
     POST /api/feedback              {turn_id, value: 1|-1|0, note}
     POST /api/judge | /api/to-eval  {turn_id}
@@ -330,7 +330,8 @@ def make_handler(dash: Dashboard):
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass   # the tab closed; the turn still finishes and is saved
 
-            turn = agent.respond(message, session_id, source="chat", listener=emit)
+            turn = agent.respond(message, session_id, source="chat", listener=emit,
+                                 long=bool(body.get("long")))
             emit("done", _summary(turn))
 
         # ---- DELETE

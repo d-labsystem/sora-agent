@@ -46,6 +46,7 @@ from typing import Any, Protocol
 from tools.registry import web_tools
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+COMPACT_BETA = "compact-2026-09-04"     # on-demand compaction (loop/compaction.py)
 # Top-level automatic caching: the API puts a breakpoint on the last block of
 # each request, so every step of the loop reads the steps before it from cache.
 AUTO_CACHE = {"type": "ephemeral"}
@@ -125,6 +126,13 @@ def _server_results(block) -> dict[str, Any]:
 ANTHROPIC_CODE_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}
 
 
+def _has_compaction(messages: list) -> bool:
+    """A compacted conversation starts with the compaction block."""
+    if not messages or isinstance(messages[0]["content"], str):
+        return False
+    return any(_get(b, "type") == "compaction" for b in messages[0]["content"])
+
+
 class AnthropicProvider:
     name = "anthropic"
     capabilities = dict.fromkeys(CAPABILITIES, True)
@@ -138,10 +146,13 @@ class AnthropicProvider:
 
     def step(self, model, system, messages, tools, effort, on_text, final=False) -> Step:
         extra = {"tool_choice": {"type": "none"}} if final else {}
+        betas = [FALLBACK_BETA]
+        if _has_compaction(messages):
+            betas.append(COMPACT_BETA)        # needed on every request that carries the signed block
         with self.client.beta.messages.stream(
             model=model, max_tokens=MAX_TOKENS, system=system, messages=messages,
             tools=tools, output_config={"effort": effort},
-            betas=[FALLBACK_BETA], fallbacks="default",   # a declined request is retried on another model
+            betas=betas, fallbacks="default",   # a declined request is retried on another model
             cache_control=AUTO_CACHE, **extra,
         ) as stream:
             for delta in stream.text_stream:

@@ -26,7 +26,8 @@ def fake_turn(**over):
 def test_turn_checks():
     assert all(turn_checks(fake_turn()).values())
     checks = turn_checks(fake_turn(status="limit", tool_errors=1))
-    assert checks == {"replied": False, "no_tool_errors": False, "within_step_limit": False}
+    assert checks == {"replied": False, "no_tool_errors": False, "within_step_limit": False,
+                      "within_budget": True}
 
 
 def test_case_checks_each_expectation():

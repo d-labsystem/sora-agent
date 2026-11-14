@@ -83,6 +83,10 @@ class Settings:
     small_model: str = "claude-haiku-5-5"   # gate, consolidation, reflection, judge
     effort: str = "medium"
     max_iterations: int = 10
+    # Long-task mode (ask --long, the dashboard toggle, "long": true in evals)
+    long_iterations: int = 60
+    long_budget_usd: float = 2.0            # per long task; at the cap it answers with what it has
+    compact_at: int = 150_000               # summarize a turn's context past this many tokens; 0 = never
     history_turns: int = 10
     consolidate_every: int = 6
     web_tools: bool = True
@@ -121,6 +125,9 @@ def load_settings(home: Path | str | None = None) -> Settings:
         small_model=os.getenv("SORA_SMALL_MODEL", d.small_model),
         effort=os.getenv("SORA_EFFORT", d.effort),
         max_iterations=int(os.getenv("SORA_MAX_ITERATIONS", d.max_iterations)),
+        long_iterations=int(os.getenv("SORA_LONG_ITERATIONS", d.long_iterations)),
+        long_budget_usd=float(os.getenv("SORA_LONG_BUDGET_USD", d.long_budget_usd)),
+        compact_at=int(os.getenv("SORA_COMPACT_AT", d.compact_at)),
         history_turns=int(os.getenv("SORA_HISTORY_TURNS", d.history_turns)),
         consolidate_every=int(os.getenv("SORA_CONSOLIDATE_EVERY", d.consolidate_every)),
         web_tools=_flag("SORA_WEB_TOOLS", d.web_tools),
@@ -300,8 +307,9 @@ class Sora:
     # ---- one turn
 
     def respond(self, message: str, session_id: str | None = None, source: str = "chat",
-                eval_run: str | None = None, listener=None) -> dict:
-        """Run one turn and return the finished trace (reply, status, spans...)."""
+                eval_run: str | None = None, listener=None, long: bool = False) -> dict:
+        """Run one turn and return the finished trace (reply, status, spans...).
+        `long` runs it as a long task: more steps, a dollar cap."""
         s = self.settings
         with self.lock:
             session_id = self.store.ensure_session(session_id, message)
@@ -309,7 +317,7 @@ class Sora:
             turn = self.tracer.start(message, session_id, source, s.model, eval_run, listener)
             self.context.session_id, self.context.turn_id = session_id, turn.id
             notify = turn.notify
-            notify("turn", name="turn started", turn_id=turn.id, session_id=session_id)
+            notify("turn", name="turn started", turn_id=turn.id, session_id=session_id, long=long)
             try:
                 # 3-4. recall and context
                 found = recall(self.store, self.small, self.small_id, session_id, message, notify)
@@ -329,9 +337,12 @@ class Sora:
 
                 # 5. the loop
                 result = run_loop(self.provider, self.model_id, system, messages, self.registry, notify,
-                                  effort=s.effort, max_iterations=s.max_iterations,
-                                  tool_notes=tool_notes)
+                                  effort=s.effort,
+                                  max_iterations=s.long_iterations if long else s.max_iterations,
+                                  tool_notes=tool_notes, compact_at=s.compact_at,
+                                  budget_usd=s.long_budget_usd if long else 0.0)
                 status = ("refused" if result.stop_reason == "refusal"
+                          else "budget" if result.budget_reached
                           else "limit" if result.limit_reached else "ok")
                 notify("reply", name="reply ready", reply=result.reply, status=status)
 
@@ -408,6 +419,8 @@ class Sora:
     def status(self) -> dict:
         s = self.settings
         return {"model": s.model, "small_model": s.small_model, "effort": s.effort,
+                "long_tasks": {"iterations": s.long_iterations, "budget_usd": s.long_budget_usd,
+                               "compact_at": s.compact_at},
                 "providers": {"main": self.provider.name, "small": self.small.name,
                               "capabilities": self.provider.capabilities, "limits": self.limits,
                               "web_tools": any(t.get("type", "").startswith("web_search")

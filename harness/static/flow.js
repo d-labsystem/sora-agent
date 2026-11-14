@@ -195,7 +195,8 @@
           run(["llm"], [step === 1 ? "context-llm" : "llm-loop"]);
           badge("llm", `step ${step}`);
           say(`LLM call, step ${step}: the model is thinking${step > 1 ? " with the tool results" : ""}…`);
-        } else if (name === "reflection") { run(["reflection"], ["reply-reflection"]); say("Reflection running: looking for a lesson…"); }
+        } else if (name === "compaction") { run(["llm"], ["llm-loop"]); badge("llm", "compacting"); say("Context is long: summarizing it so the task can go on…"); }
+        else if (name === "reflection") { run(["reflection"], ["reply-reflection"]); say("Reflection running: looking for a lesson…"); }
         else if (name === "consolidation") { run(["consolidation"], ["session-consolidation"]); say("Consolidation running: chat → facts + episode…"); }
         else if (name === "judge") { run(["trace"]); say("Judge running…"); }
         break;
@@ -217,6 +218,10 @@
           on(["llm"], [step === 1 ? "context-llm" : "llm-loop"], d.ok === false);
           badge("llm", `step ${step}`);
           say(`LLM call, step ${step}${d.cost_usd ? ` · $${d.cost_usd.toFixed(4)}` : ""}${d.cache_read_tokens ? ` · ${d.cache_read_tokens} tokens from cache` : ""}`);
+        } else if (name === "compaction") {
+          stop(["llm"], ["llm-loop"]); on(["llm"], ["llm-loop"], d.ok === false); badge("llm", "compacted");
+          say(d.ok === false ? "Compaction returned no summary; the task carries on as it is."
+                             : `Context summarized${d.cost_usd ? ` · $${d.cost_usd.toFixed(4)}` : ""}: the next step starts from the summary.`);
         } else if (name === "reflection") { stop(["reflection"], ["reply-reflection"]); on(["reflection"], ["reply-reflection"]); say("Reflection done."); }
         else if (name === "consolidation") { stop(["consolidation"], ["session-consolidation"]); on(["consolidation"], ["session-consolidation"]); say("Consolidation done."); }
         else if (name === "judge") { stop(["trace"]); on(["trace"]); say("Judge done."); }

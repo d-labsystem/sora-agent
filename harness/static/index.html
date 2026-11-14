@@ -38,6 +38,8 @@
           </div>
           <form id="composer">
             <textarea id="input" rows="1" placeholder="Message sora…  (Enter to send, Shift+Enter for a new line)"></textarea>
+            <label class="long-toggle" title="Long task: up to 60 steps, a $2 cap, and the context is summarized when it grows long">
+              <input type="checkbox" id="long-task"> Long task</label>
             <button type="submit" class="primary" id="send">Send</button>
           </form>
         </div>
@@ -72,7 +74,7 @@
             <select id="trace-status">
               <option value="">Any status</option><option value="ok">ok</option>
               <option value="error">error</option><option value="limit">limit</option>
-              <option value="refused">refused</option>
+              <option value="refused">refused</option><option value="budget">budget</option>
             </select>
             <a class="button" href="/api/export" download>Export JSONL</a>
           </div>

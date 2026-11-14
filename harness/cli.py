@@ -112,13 +112,16 @@ class Chat:
     def say(self, text: str) -> None:
         self.printer.line(text)
 
-    def send(self, message: str) -> dict:
-        turn = self.agent.respond(message, self.session_id, source="cli", listener=self.printer)
+    def send(self, message: str, long: bool = False) -> dict:
+        turn = self.agent.respond(message, self.session_id, source="cli", listener=self.printer,
+                                  long=long)
         self.printer.finish()
         if turn["status"] == "error":
             self.say(self.printer.c(RED, f"Error: {turn['error']}"))
         elif turn["status"] == "limit":
             self.say(self.printer.c(DIM, "(stopped at the step limit)"))
+        elif turn["status"] == "budget":
+            self.say(self.printer.c(DIM, "(stopped at the long-task spending cap)"))
         self.session_id = turn.get("session_id") or self.session_id
         self.last_turn = turn
         return turn
@@ -225,6 +228,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     sub.add_parser("chat", help="chat in the terminal (default)")
     ask = sub.add_parser("ask", help="ask one question and print the reply")
     ask.add_argument("message", nargs="+")
+    ask.add_argument("--long", action="store_true",
+                     help="run as a long task: more steps, a dollar cap, compaction")
     sub.add_parser("serve", help="run the web dashboard")
     ev = sub.add_parser("eval", help="run an eval dataset")
     ev.add_argument("dataset")
@@ -281,8 +286,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
             return 0
         chat = Chat(agent, out, color=out.isatty())
         if command == "ask":
-            turn = chat.send(" ".join(args.message))
-            return 0 if turn["status"] in ("ok", "limit") else 1
+            turn = chat.send(" ".join(args.message), long=args.long)
+            return 0 if turn["status"] in ("ok", "limit", "budget") else 1
         chat.run(read)
         return 0
     finally:

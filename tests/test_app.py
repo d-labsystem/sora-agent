@@ -46,7 +46,8 @@ def test_full_turn_with_memory_tools_and_trace(tmp_path):
     turn = agent.respond("I like masala chai. Where do I live?",
                          listener=lambda kind, data: live.append(kind))
     assert turn["status"] == "ok" and turn["reply"] == "Noted, masala chai it is."
-    assert turn["checks"] == {"replied": True, "no_tool_errors": True, "within_step_limit": True}
+    assert turn["checks"] == {"replied": True, "no_tool_errors": True, "within_step_limit": True,
+                              "within_budget": True}
     # memory recall reached the system prompt as labelled data
     system = system_text(client.requests[0]["system"])
     assert "## Memory" in system and "- Aryan lives in Pune" in system
