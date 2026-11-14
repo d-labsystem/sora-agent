@@ -7,12 +7,18 @@ import pytest
 
 import loop.providers as providers
 from fake import FakeClient, text, tool_use
-from harness.app import Settings, Sora
+from datetime import datetime, timezone
+
+from harness.app import Settings, Sora, build_system
 from loop.agent import run_loop
 from loop.llm import ask_json, schema
-from loop.providers import (NoAnswer, OpenAICompatProvider, Providers, split_model,
-                            to_openai_messages, to_openai_tools)
+from loop.providers import (NoAnswer, OpenAICompatProvider, OpenAIResponsesProvider, Providers,
+                            split_model, to_openai_messages, to_openai_tools, to_responses_input,
+                            to_responses_tools)
 from tools.registry import WEB_TOOLS, Tool, ToolRegistry
+
+
+NOW = datetime(2026, 11, 15, 9, 0, tzinfo=timezone.utc)
 
 
 # ---- a fake OpenAI client that streams chunks like the real API
@@ -196,14 +202,24 @@ def test_ask_json_and_cut_off_answers():
 
 # ---- the app
 
-def test_app_leaves_out_web_tools_for_providers_without_them(tmp_path, monkeypatch):
+def test_app_gives_each_provider_its_own_server_tools(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_openai_client", lambda **kw: FakeOpenAI())
-    agent = Sora(Settings(home=tmp_path, model="openai:gpt-5.1"), FakeClient(), connect_mcp=False)
-    names = [t["name"] for t in agent.registry.describe()]
-    assert "web_search" not in names and "remember" in names
-    status = agent.status()["providers"]
-    assert status == {"main": "openai", "small": "anthropic", "web_tools": False,
-                      "prices_known": ["claude-haiku-5-5"]}
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+    hf = Sora(Settings(home=tmp_path / "hf", model="hf:Qwen/Qwen3-32B", code_execution=True),
+              FakeClient(), connect_mcp=False)
+    assert hf.registry.server_tools == []
+    assert len(hf.limits) == 2 and "cannot search the web" in hf.limits[0]
+    assert "## Limits of this setup" in build_system("soul", NOW, "", [], [], None, hf.limits)[0]["text"]
+
+    oa = Sora(Settings(home=tmp_path / "oa", model="openai:gpt-5.4-mini", code_execution=True),
+              FakeClient(), connect_mcp=False)
+    assert [t["type"] for t in oa.registry.server_tools] == ["web_search", "code_interpreter"]
+    assert oa.limits == [] and oa.provider.max_builtin_calls == 12
+    status = oa.status()["providers"]
+    assert status["main"] == "openai" and status["web_tools"] and status["capabilities"]["code_execution"]
+
+    claude = Sora(Settings(home=tmp_path / "c", code_execution=True), FakeClient(), connect_mcp=False)
+    assert [t["name"] for t in claude.registry.server_tools] == ["web_search", "web_fetch", "code_execution"]
 
 
 # ---- errors found in the live test
@@ -257,3 +273,134 @@ def test_error_reason_when_the_sdk_already_unwrapped_it():
     assert str(providers.ProviderError.wrap("hf", exc)).endswith("Purchase pre-paid credits to continue.")
     exc = StatusError(401, "x", body={"message": "Incorrect API key provided", "type": "invalid_request_error"})
     assert "Incorrect API key provided" in str(providers.ProviderError.wrap("openai", exc))
+
+
+# ---- OpenAI Responses API
+
+class Item(NS):
+    """An output item: attributes like the SDK's, and model_dump like pydantic."""
+
+    def model_dump(self, **kw):
+        def plain(v):
+            if isinstance(v, NS):
+                return {k: plain(x) for k, x in vars(v).items() if x is not None}
+            return [plain(x) for x in v] if isinstance(v, list) else v
+        return plain(self)
+
+
+def response(*items, status="completed", reason=None, inp=500, out=80, cached=0, model="gpt-5.4-mini-2026"):
+    return NS(output=list(items), status=status, model=model, error=None,
+              incomplete_details=NS(reason=reason) if reason else None,
+              usage=NS(input_tokens=inp, output_tokens=out, input_tokens_details=NS(cached_tokens=cached)),
+              output_text="".join(p.text for i in items if i.type == "message" for p in i.content
+                                  if p.type == "output_text"))
+
+
+def msg(text_):
+    return Item(type="message", id="msg_1", role="assistant", status="completed",
+                content=[Item(type="output_text", text=text_, annotations=[])])
+
+
+REASONING = Item(type="reasoning", id="rs_1", summary=[], encrypted_content="gAAAA-secret")
+
+
+class FakeResponses:
+    def __init__(self, *responses_):
+        self.queue, self.requests = list(responses_), []
+        self.responses = NS(create=self._create)
+
+    def _create(self, **request):
+        self.requests.append(json.loads(json.dumps(request, default=str)))
+        r = self.queue.pop(0)
+        if not request.get("stream"):
+            return r
+        deltas = [NS(type="response.output_text.delta", delta=p.text) for i in r.output
+                  if i.type == "message" for p in i.content if p.type == "output_text"]
+        done = "response.incomplete" if r.status == "incomplete" else "response.completed"
+        return iter([NS(type="response.created"), *deltas, NS(type=done, response=r)])
+
+
+def test_responses_tools_keep_builtins_and_drop_anthropic_server_tools():
+    schemas = echo_registry().schemas() + [{"type": "web_search"}, {"type": "code_execution_20260521",
+                                                                   "name": "code_execution"}]
+    out = to_responses_tools(schemas)
+    assert out[0] == {"type": "function", "name": "echo", "description": "Echo.", "strict": False,
+                      "parameters": schemas[0]["input_schema"]}
+    assert [t["type"] for t in out] == ["function", "web_search"]
+
+
+def test_reasoning_carries_over_tool_steps_on_the_responses_api():
+    call = Item(type="function_call", id="fc_1", call_id="call_1", name="echo", arguments='{"x": "hi"}',
+                status="completed")
+    client = FakeResponses(response(REASONING, call, cached=400),
+                           response(msg("It said echo hi.")))
+    provider = OpenAIResponsesProvider(client)
+    messages = [{"role": "user", "content": "use echo"}]
+    result = run_loop(provider, "gpt-5.4-mini", [{"type": "text", "text": "sys"}], messages,
+                      echo_registry(), lambda *a, **k: None, effort="medium")
+    assert result.reply == "It said echo hi." and result.tool_calls[0]["output"] == "echo hi"
+    first, second = client.requests
+    assert first["reasoning"] == {"effort": "medium"} and first["store"] is False
+    assert "reasoning.encrypted_content" in first["include"] and first["instructions"] == "sys"
+    # the second step sends back the encrypted reasoning and the call, then the result
+    sent = second["input"]
+    assert sent[1] == {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAA-secret"}
+    assert sent[2]["type"] == "function_call" and sent[2]["call_id"] == "call_1"
+    assert sent[3] == {"type": "function_call_output", "call_id": "call_1", "output": "echo hi"}
+    assert (result.input_tokens, result.cache_read_tokens) == (600, 400)   # 100 + 500 uncached
+
+
+def test_web_search_and_code_show_up_as_server_tools():
+    search = Item(type="web_search_call", id="ws_1", status="completed",
+                  action=Item(type="search", query="vllm vs sglang 3090"))
+    page = Item(type="web_search_call", id="ws_2", status="completed",
+                action=Item(type="open_page", url="https://docs.vllm.ai"))
+    code = Item(type="code_interpreter_call", id="ci_1", code="print(17*23)", container_id="cntr_1",
+                status="completed", outputs=[Item(type="logs", logs="391\n")])
+    client = FakeResponses(response(REASONING, search, page, code, msg("391, and vLLM.")))
+    step = OpenAIResponsesProvider(client).step("gpt-5.4-mini", "s", [{"role": "user", "content": "q"}],
+                                                [{"type": "web_search"}], "low", print)
+    assert step.stop_reason == "end_turn" and step.usage.web_searches == 1
+    assert step.usage.tool_fees_usd == providers.CODE_SESSION_USD
+    assert step.server_events == [
+        ("server_tool", {"name": "web_search", "input": {"query": "vllm vs sglang 3090"}}),
+        ("server_tool", {"name": "web_fetch", "input": {"url": "https://docs.vllm.ai"}}),
+        ("server_tool", {"name": "code_execution", "input": {"code": "print(17*23)"}}),
+        ("server_result", {"name": "code_interpreter_result", "logs": "391\n"})]
+    assert step.content[0]["type"] == "openai_items" and len(step.content[0]["items"]) == 5
+
+
+def test_responses_stop_reasons_and_final_call():
+    refusal = Item(type="message", id="m", role="assistant", status="completed",
+                   content=[Item(type="refusal", refusal="no")])
+    client = FakeResponses(response(msg("cut"), status="incomplete", reason="max_output_tokens"),
+                           response(refusal), response(msg("ok"), model="gpt-4.1"))
+    p = OpenAIResponsesProvider(client)
+    assert p.step("gpt-5.4-mini", "s", [], [], "low", print).stop_reason == "max_tokens"
+    assert p.step("gpt-5.4-mini", "s", [], [], "low", print).stop_reason == "refusal"
+    p.step("gpt-4.1", "s", [], echo_registry().schemas(), "low", print, final=True)
+    last = client.requests[2]
+    assert last["tool_choice"] == "none" and "reasoning" not in last   # gpt-4.1 isn't a reasoning model
+
+
+def test_history_from_other_providers_translates_to_responses_input():
+    history = [{"role": "user", "content": "hi"},
+               {"role": "assistant", "content": [text("Checking."), tool_use("echo", {"x": "a"}, "c9")]},
+               {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c9",
+                                             "content": "boom", "is_error": True}]}]
+    assert to_responses_input(history) == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Checking."},
+        {"type": "function_call", "call_id": "c9", "name": "echo", "arguments": '{"x": "a"}'},
+        {"type": "function_call_output", "call_id": "c9", "output": "Error: boom"}]
+
+
+def test_responses_ask_json():
+    client = FakeResponses(response(msg('{"ok": true}')), response(msg('{"o'), status="incomplete",
+                                                                    reason="max_output_tokens"))
+    p = OpenAIResponsesProvider(client)
+    fmt = schema({"ok": {"type": "boolean"}})
+    assert ask_json(p, "gpt-5.4-mini", "q", fmt) == {"ok": True}
+    assert client.requests[0]["text"]["format"]["schema"] == fmt["schema"]
+    with pytest.raises(NoAnswer):
+        ask_json(p, "gpt-5.4-mini", "q", fmt)

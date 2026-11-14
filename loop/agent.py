@@ -63,7 +63,8 @@ class LoopResult:
 def _record(result: LoopResult, step: Step, notify: Notify, iteration: int, ms: int) -> None:
     u = step.usage
     served_by = step.model or result.model
-    spent = cost(served_by, u.input_tokens, u.output_tokens, u.web_searches, u.cache_read, u.cache_write)
+    spent = cost(served_by, u.input_tokens, u.output_tokens, u.web_searches, u.cache_read,
+                 u.cache_write) + u.tool_fees_usd
     result.input_tokens += u.input_tokens
     result.output_tokens += u.output_tokens
     result.cache_read_tokens += u.cache_read
@@ -74,7 +75,8 @@ def _record(result: LoopResult, step: Step, notify: Notify, iteration: int, ms: 
     notify("llm", name=f"model call {iteration}", model=served_by, ms=ms, ok=True,
            stop_reason=step.stop_reason, input_tokens=u.input_tokens,
            output_tokens=u.output_tokens, cache_read_tokens=u.cache_read,
-           cache_write_tokens=u.cache_write, web_searches=u.web_searches, cost_usd=spent)
+           cache_write_tokens=u.cache_write, web_searches=u.web_searches, cost_usd=spent,
+           **({"reasoning_tokens": u.reasoning_tokens} if u.reasoning_tokens else {}))
     for kind, data in step.server_events:
         notify(kind, **data)
         if kind == "server_tool" and data["name"] in ("web_search", "web_fetch"):

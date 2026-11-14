@@ -52,7 +52,7 @@ from tools import workspace_server
 from tools.builtin import TurnContext, register_builtins
 from tools.visuals import VISUAL_TOOLS, visual_tools
 from tools.mcp_client import MCPManager, load_config
-from tools.registry import ToolRegistry, web_tools
+from tools.registry import ToolRegistry
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ class Settings:
     web_max_searches: int = 8               # per model call; 0 = unlimited
     web_max_fetches: int = 4                # per model call; 0 = unlimited
     web_fetch_max_tokens: int = 20000       # per fetched page or PDF; 0 = unlimited
+    code_execution: bool = False            # run code in the provider's sandbox (off: chat doesn't need it)
     workspace: bool = True                  # the bundled workspace MCP server
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
@@ -126,6 +127,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         web_max_searches=int(os.getenv("SORA_WEB_MAX_SEARCHES", d.web_max_searches)),
         web_max_fetches=int(os.getenv("SORA_WEB_MAX_FETCHES", d.web_max_fetches)),
         web_fetch_max_tokens=int(os.getenv("SORA_WEB_FETCH_MAX_TOKENS", d.web_fetch_max_tokens)),
+        code_execution=_flag("SORA_CODE_EXECUTION", d.code_execution),
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
@@ -164,8 +166,21 @@ def explain(exc: Exception) -> str:
 
 # ---- the system prompt
 
+def capability_limits(capabilities: dict[str, bool], settings: Settings) -> list[str]:
+    """One line per thing the user turned on that this provider can't do, so
+    the model says "I can't" instead of promising a search it can't run."""
+    lines = []
+    if settings.web_tools and not capabilities.get("web_search"):
+        lines.append("You cannot search the web or open web pages in this setup. When a question "
+                     "needs current information, say so instead of guessing.")
+    if settings.code_execution and not capabilities.get("code_execution"):
+        lines.append("You cannot run code in this setup; work calculations out step by step.")
+    return lines
+
+
 def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
-                 lessons: list[str], found: GateResult | None) -> list[dict]:
+                 lessons: list[str], found: GateResult | None,
+                 limits: list[str] | None = None) -> list[dict]:
     """Two blocks, split at the cache breakpoint.
 
     Prompt caching matches the prompt byte for byte from the start, and the API
@@ -175,6 +190,8 @@ def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
     (the time, matched skills, lessons, memory) goes in a second block after
     it. Put the clock above the breakpoint and nothing would ever be reused."""
     stable = [soul.strip()]
+    if limits:
+        stable.append("## Limits of this setup\n" + "\n".join(f"- {l}" for l in limits))
     if catalog:
         stable.append("## Skills\nReusable procedures. If a request fits one whose steps aren't "
                       "in this prompt, call load_skill.\n" + catalog)
@@ -249,11 +266,12 @@ class Sora:
         if not self.soul_path.exists():
             self.soul_path.write_text(DEFAULT_SOUL + "\n", encoding="utf-8")
 
-        # web_search/web_fetch run on Anthropic's servers; other providers can't.
-        web = web_tools(settings.web_max_searches, settings.web_max_fetches,
-                        settings.web_fetch_max_tokens) \
-            if settings.web_tools and self.provider.server_tools else []
-        self.registry = ToolRegistry(web)
+        # Server tools (web search, code) run on the provider's side, in its own format.
+        web = ({"max_searches": settings.web_max_searches, "max_fetches": settings.web_max_fetches,
+                "fetch_max_tokens": settings.web_fetch_max_tokens} if settings.web_tools else None)
+        self.registry = ToolRegistry(self.provider.server_tool_specs(web, settings.code_execution),
+                                     server_source=self.provider.name)
+        self.limits = capability_limits(self.provider.capabilities, settings)
         register_builtins(self.registry, self.store, self.skills, self.context)
         for tool in visual_tools():
             self.registry.register(tool)
@@ -299,7 +317,7 @@ class Sora:
                 matched = self.skills.match(message)
                 system = build_system(self.soul_path.read_text(encoding="utf-8"),
                                       datetime.now().astimezone(), self.skills.catalog(),
-                                      matched, lessons, found)
+                                      matched, lessons, found, self.limits)
                 tool_names = [t["name"] for t in self.registry.describe()]
                 tool_notes = self.lessons.tool_notes(tool_names)
                 notify("context", name="prompt context", facts=len(found.facts),
@@ -391,7 +409,9 @@ class Sora:
         s = self.settings
         return {"model": s.model, "small_model": s.small_model, "effort": s.effort,
                 "providers": {"main": self.provider.name, "small": self.small.name,
-                              "web_tools": self.provider.server_tools,
+                              "capabilities": self.provider.capabilities, "limits": self.limits,
+                              "web_tools": any(t.get("type", "").startswith("web_search")
+                                               for t in self.registry.server_tools),
                               "prices_known": [m for m in (self.model_id, self.small_id)
                                                if known_price(m)]},
                 "memory_search": (f"hybrid ({s.embedding_model})" if self.store.embedder

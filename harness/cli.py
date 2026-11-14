@@ -66,8 +66,12 @@ class Printer:
             mark = self.c(GREEN, "✓") if data.get("ok", True) else self.c(RED, "✗")
             self.line(self.c(DIM, f"  ↳ {data.get('name')} ") + mark + self.c(DIM, f" {data.get('ms', 0)}ms"))
         elif kind == "server_tool":
-            query = (data.get("input") or {}).get("query") or (data.get("input") or {}).get("url", "")
-            self.line(self.c(DIM, f"  ↳ {data.get('name')}: {query}"))
+            args = data.get("input") or {}
+            # search -> query, fetch -> url, code -> its first line (Anthropic's code
+            # tools send `code` or `command`); nothing reported -> just the name
+            what = args.get("query") or args.get("url") or \
+                (args.get("code") or args.get("command") or "").strip().split("\n")[0][:80]
+            self.line(self.c(DIM, f"  ↳ {data.get('name')}" + (f": {what}" if what else "")))
         elif kind == "gate" and data.get("facts"):
             self.line(self.c(DIM, f"  ↳ recalled {len(data['facts'])} fact(s)"))
         elif kind == "learning" and data.get("lessons"):
@@ -191,7 +195,9 @@ def format_status(status: dict) -> str:
     prov = status.get("providers", {})
     rows = [f"model {status['model']} (small: {status['small_model']}, effort {status['effort']})",
             f"via   {prov.get('main', '?')} / {prov.get('small', '?')}, web tools "
-            + ("on" if prov.get("web_tools") else "off (Anthropic only)"),
+            + ("on" if prov.get("web_tools") else "off") + ", server tools: "
+            + (", ".join(t["name"] for t in status["tools"] if t["source"] == prov.get("main")) or "none"),
+            *[f"limit {line}" for line in prov.get("limits", [])],
             f"home  {status['home']}", "tools:"]
     rows += [f"  {t['name']:<28} {t['source']}" for t in status["tools"]]
     if status["mcp"]:

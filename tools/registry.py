@@ -80,9 +80,10 @@ def invalid_args(schema: dict[str, Any], args: Any) -> str | None:
 
 
 class ToolRegistry:
-    def __init__(self, server_tools: list[dict] | None = None) -> None:
+    def __init__(self, server_tools: list[dict] | None = None, server_source: str = "anthropic") -> None:
         self._tools: dict[str, Tool] = {}
-        self.server_tools = list(server_tools or [])
+        self.server_tools = list(server_tools or [])   # in the provider's own format
+        self.server_source = server_source
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -94,7 +95,7 @@ class ToolRegistry:
         """For the dashboard's tools page."""
         local = [{"name": t.name, "description": t.description, "source": t.source}
                  for t in self._tools.values()]
-        server = [{"name": t["name"], "description": t["type"], "source": "anthropic"}
+        server = [{"name": t.get("name", t["type"]), "description": t["type"], "source": self.server_source}
                   for t in self.server_tools]
         return local + server
 

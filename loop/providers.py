@@ -13,17 +13,25 @@ Choosing a provider. A model name may carry a prefix:
     hf:Qwen/Qwen3-32B        Hugging Face Inference Providers
     local:my-model           any OpenAI-compatible server (vLLM, SGLang, TGI...)
 
+Three adapters:
+
+    AnthropicProvider        Messages API (the native format)
+    OpenAIResponsesProvider  openai: models, Responses API: reasoning stays on
+                             during tool use, built-in web search and code
+    OpenAICompatProvider     hf: and local: models, Chat Completions
+
 One message format inside. Conversations are kept in Anthropic's format,
 because it is the richest: thinking blocks, server tool results and
-compaction blocks all have a place in it. The OpenAI-compatible provider
-translates that format to Chat Completions on every call and translates the
-answer back, so the loop never knows which provider ran. Blocks with no
-Chat Completions equivalent (thinking, server tool results) are left out of
-the translation; they only exist in conversations Anthropic produced.
+compaction blocks all have a place in it. The OpenAI adapters translate that
+format on every call and translate the answer back, so the loop never knows
+which provider ran. What a format can't express is left out of the
+translation; OpenAI's own output items (encrypted reasoning, web search
+calls) travel inside one "openai_items" block that only the Responses
+adapter reads.
 
-What only Anthropic has: server-side web search and fetch, prompt caching
-breakpoints, refusal fallbacks and thinking. `server_tools` says whether a
-provider can run web_search/web_fetch; the app leaves them out otherwise.
+Capabilities. Each provider says what it can do (CAPABILITIES). The app
+gives the model only the server tools its provider can run, and tells it in
+one line what it can't do, so it says "I can't search" instead of pretending.
 """
 
 from __future__ import annotations
@@ -34,6 +42,8 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+
+from tools.registry import web_tools
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Top-level automatic caching: the API puts a breakpoint on the last block of
@@ -52,6 +62,8 @@ class Usage:
     cache_read: int = 0
     cache_write: int = 0
     web_searches: int = 0
+    tool_fees_usd: float = 0.0     # per-use fees beyond tokens and searches (code containers)
+    reasoning_tokens: int = 0      # part of output_tokens, when the provider reports it
 
 
 @dataclass
@@ -73,9 +85,15 @@ class Step:
     server_events: list[tuple[str, dict]] = field(default_factory=list)   # for the trace
 
 
+CAPABILITIES = ("reasoning_with_tools", "web_search", "web_fetch", "code_execution",
+                "prompt_cache", "refusal_fallback")
+
+
 class Provider(Protocol):
     name: str
-    server_tools: bool
+    capabilities: dict[str, bool]
+
+    def server_tool_specs(self, web: dict | None, code: bool) -> list[dict]: ...
 
     def step(self, model: str, system, messages: list, tools: list, effort: str,
              on_text: OnText, final: bool = False) -> Step: ...
@@ -104,12 +122,19 @@ def _server_results(block) -> dict[str, Any]:
     return {"url": url} if url else {}
 
 
+ANTHROPIC_CODE_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}
+
+
 class AnthropicProvider:
     name = "anthropic"
-    server_tools = True
+    capabilities = dict.fromkeys(CAPABILITIES, True)
 
     def __init__(self, client):
         self.client = client
+
+    def server_tool_specs(self, web, code):
+        """`web` holds the search/fetch limits, or None for no web tools."""
+        return (web_tools(**web) if web else []) + ([dict(ANTHROPIC_CODE_TOOL)] if code else [])
 
     def step(self, model, system, messages, tools, effort, on_text, final=False) -> Step:
         extra = {"tool_choice": {"type": "none"}} if final else {}
@@ -305,13 +330,16 @@ class OpenAICompatProvider:
     model runs tool steps without reasoning (effort "none"). The Responses API
     would keep reasoning on with tools; that is a separate adapter."""
 
-    server_tools = False
+    capabilities = {**dict.fromkeys(CAPABILITIES, False)}
 
     def __init__(self, client, name: str = "openai", openai_params: bool = True):
         self.client = client
         self.name = name
         self.openai_params = openai_params
         self.no_effort_with_tools: set[str] = set()
+
+    def server_tool_specs(self, web, code):
+        return []                                  # Chat Completions has no server tools
 
     def _limits(self, model: str, effort: str | None, max_tokens: int, tools: bool = False) -> dict:
         if not self.openai_params:
@@ -394,6 +422,221 @@ class OpenAICompatProvider:
         return json.loads(choice.message.content or ""), usage, getattr(response, "model", model)
 
 
+# ---- OpenAI Responses API
+
+OPENAI_BUILTIN = ("web_search", "code_interpreter")
+CODE_SESSION_USD = float(os.getenv("SORA_OPENAI_CODE_SESSION_USD", "0.03"))   # list price per container
+
+
+def is_reasoning(model: str) -> bool:
+    return model.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def to_responses_tools(tools: list[dict]) -> list[dict]:
+    """Function tools in Responses shape, plus OpenAI's own built-in tools.
+    Anthropic server tools (web_search_2026..., code_execution_2026...) are dropped."""
+    out = []
+    for t in tools:
+        if "input_schema" in t:
+            out.append({"type": "function", "name": t["name"], "description": t.get("description", ""),
+                        "parameters": t["input_schema"], "strict": False})
+        elif t.get("type") in OPENAI_BUILTIN:
+            out.append(t)
+    return out
+
+
+def to_responses_input(messages: list) -> list[dict]:
+    """Anthropic-format conversation -> Responses input items.
+
+        assistant turn made by OpenAI   its saved output items, as they were
+                                        (encrypted reasoning, searches, calls)
+        other assistant text/tool_use   message / function_call items
+        user tool_result                function_call_output items
+    """
+    out: list[dict] = []
+    for message in messages:
+        role, content = message["role"], message["content"]
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        saved = [b for b in content if _get(b, "type") == "openai_items"]
+        if role == "assistant" and saved:
+            for block in saved:
+                out.extend(_get(block, "items") or [])
+            continue
+        texts: list[str] = []
+
+        def flush():                       # keep text and calls in the order they were said
+            if texts:
+                out.append({"role": role, "content": "\n".join(texts)})
+                texts.clear()
+
+        for block in content:
+            kind = _get(block, "type")
+            if kind == "text":
+                texts.append(_get(block, "text", ""))
+            elif kind == "tool_use" and role == "assistant":
+                flush()
+                out.append({"type": "function_call", "call_id": _get(block, "id"), "name": _get(block, "name"),
+                            "arguments": json.dumps(_get(block, "input") or {})})
+            elif kind == "tool_result":
+                flush()
+                result = _result_text(_get(block, "content"))
+                out.append({"type": "function_call_output", "call_id": _get(block, "tool_use_id"),
+                            "output": f"Error: {result}" if _get(block, "is_error") else result})
+        flush()
+    return out
+
+
+def _search_event(action) -> tuple[str, dict]:
+    kind = _get(action, "type")
+    if kind == "open_page":
+        return "server_tool", {"name": "web_fetch", "input": {"url": _get(action, "url")}}
+    if kind == "find":
+        return "server_tool", {"name": "web_fetch", "input": {"url": _get(action, "url"),
+                                                              "find": _get(action, "pattern")}}
+    query = _get(action, "query") or "; ".join(_get(action, "queries") or [])
+    return "server_tool", {"name": "web_search", "input": {"query": query}}
+
+
+class OpenAIResponsesProvider:
+    """OpenAI's Responses API. Compared with Chat Completions it keeps the
+    model's reasoning during tool use and runs web search and code on
+    OpenAI's side, like Anthropic's server tools.
+
+    Nothing is stored at OpenAI (store=False). The model's reasoning comes
+    back encrypted and is sent back on the next step, so it carries on from
+    where it was without OpenAI keeping the conversation."""
+
+    name = "openai"
+    capabilities = {"reasoning_with_tools": True, "web_search": True, "web_fetch": True,
+                    "code_execution": True, "prompt_cache": True, "refusal_fallback": False}
+
+    def __init__(self, client):
+        self.client = client
+        self.max_builtin_calls = 0
+
+    def server_tool_specs(self, web, code):
+        specs = []
+        if web:
+            specs.append({"type": "web_search"})
+            # One cap for all built-in tool calls per response (searches + page opens).
+            self.max_builtin_calls = (web.get("max_searches") or 0) + (web.get("max_fetches") or 0)
+        if code:
+            specs.append({"type": "code_interpreter", "container": {"type": "auto"}})
+        return specs
+
+    def _create(self, request: dict):
+        try:
+            return self.client.responses.create(**request)
+        except Exception as exc:
+            raise ProviderError.wrap(self.name, exc) from exc
+
+    def step(self, model, system, messages, tools, effort, on_text, final=False) -> Step:
+        functions = to_responses_tools(tools)
+        request: dict[str, Any] = {
+            "model": model, "input": to_responses_input(messages), "stream": True,
+            "store": False, "max_output_tokens": 32000, "prompt_cache_key": f"sora-{model}"}
+        instructions = _system_text(system)
+        if instructions:
+            request["instructions"] = instructions
+        include = []
+        if is_reasoning(model):
+            request["reasoning"] = {"effort": effort}
+            include.append("reasoning.encrypted_content")
+        if functions:
+            request["tools"] = functions
+            if final:
+                request["tool_choice"] = "none"
+            if any(t["type"] == "code_interpreter" for t in functions):
+                include.append("code_interpreter_call.outputs")
+            if self.max_builtin_calls and any(t["type"] in OPENAI_BUILTIN for t in functions):
+                request["max_tool_calls"] = self.max_builtin_calls
+        if include:
+            request["include"] = include
+
+        response = None
+        for event in self._create(request):
+            kind = getattr(event, "type", "")
+            if kind == "response.output_text.delta":
+                on_text(event.delta)
+            elif kind in ("response.completed", "response.incomplete", "response.failed"):
+                response = event.response
+            elif kind == "error":
+                raise ProviderError(f"openai stream error: {getattr(event, 'message', event)}")
+        if response is None:
+            raise ProviderError("openai stream ended without a response")
+        if response.status == "failed":
+            raise ProviderError(f"openai response failed: {getattr(response.error, 'message', response.error)}")
+        return self._to_step(response, model)
+
+    @staticmethod
+    def _to_step(response, model: str) -> Step:
+        text, calls, events, refused = [], [], [], False
+        searches, containers = 0, set()
+        for item in response.output:
+            kind = item.type
+            if kind == "message":
+                for part in item.content:
+                    if part.type == "output_text":
+                        text.append(part.text)
+                    elif part.type == "refusal":
+                        refused = True
+            elif kind == "function_call":
+                calls.append(ToolCall(item.call_id, item.name, _parse_args(item.arguments)))
+            elif kind == "web_search_call":
+                event = _search_event(item.action)
+                searches += event[1]["name"] == "web_search"
+                events.append(event)
+            elif kind == "code_interpreter_call":
+                containers.add(item.container_id)
+                events.append(("server_tool", {"name": "code_execution", "input": {"code": item.code}}))
+                logs = "".join(_get(o, "logs", "") or "" for o in item.outputs or [])
+                events.append(("server_result", {"name": "code_interpreter_result", "logs": logs[:2000]}))
+
+        reply = "".join(text)
+        reason = getattr(response.incomplete_details, "reason", None) if response.status == "incomplete" else None
+        stop = ("refusal" if refused or reason == "content_filter" else
+                "max_tokens" if reason == "max_output_tokens" else
+                "tool_use" if calls else "end_turn")
+        u = response.usage
+        cached = getattr(getattr(u, "input_tokens_details", None), "cached_tokens", 0) or 0
+        usage = Usage(input_tokens=(u.input_tokens if u else 0) - cached,
+                      output_tokens=u.output_tokens if u else 0, cache_read=cached,
+                      web_searches=searches, tool_fees_usd=len(containers) * CODE_SESSION_USD,
+                      reasoning_tokens=getattr(getattr(u, "output_tokens_details", None),
+                                               "reasoning_tokens", 0) or 0)
+        items = [item.model_dump(mode="json", exclude_none=True) for item in response.output]
+        content: list[dict] = [{"type": "openai_items", "items": items}]
+        if reply:
+            content.append({"type": "text", "text": reply})
+        content += [{"type": "tool_use", "id": c.id, "name": c.name, "input": c.input} for c in calls]
+        return Step(content=content, text=reply, tool_calls=calls if stop == "tool_use" else [],
+                    stop_reason=stop, model=getattr(response, "model", "") or model,
+                    usage=usage, server_events=events)
+
+    def ask_json(self, model, prompt, output_format, max_tokens):
+        request: dict[str, Any] = {
+            "model": model, "input": [{"role": "user", "content": prompt}], "store": False,
+            "max_output_tokens": max_tokens,
+            "text": {"format": {"type": "json_schema", "name": "answer",
+                                "schema": output_format["schema"], "strict": True}}}
+        if is_reasoning(model):
+            request["reasoning"] = {"effort": "low"}
+        response = self._create(request)
+        u = response.usage
+        cached = getattr(getattr(u, "input_tokens_details", None), "cached_tokens", 0) or 0
+        usage = Usage((u.input_tokens if u else 0) - cached, u.output_tokens if u else 0, cache_read=cached)
+        if response.status == "incomplete":
+            reason = getattr(response.incomplete_details, "reason", "")
+            raise NoAnswer("refusal" if reason == "content_filter" else "max_tokens", usage)
+        refused = any(p.type == "refusal" for item in response.output if item.type == "message"
+                      for p in item.content)
+        if refused:
+            raise NoAnswer("refusal", usage)
+        return json.loads(response.output_text or ""), usage, getattr(response, "model", model)
+
+
 # ---- choosing one
 
 PREFIXES = ("openai", "hf", "local")
@@ -425,7 +668,7 @@ def build(kind: str, anthropic_client=None) -> Provider:
             anthropic_client = anthropic.Anthropic()
         return AnthropicProvider(anthropic_client)
     if kind == "openai":
-        return OpenAICompatProvider(_openai_client(), "openai")
+        return OpenAIResponsesProvider(_openai_client())
     if kind == "hf":
         token = os.getenv("HF_TOKEN")
         if not token:
