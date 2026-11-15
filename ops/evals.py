@@ -51,6 +51,8 @@ from loop.llm import ask_json, schema
 from ops.tracing import Tracer, now_iso
 
 EXPECT_KEYS = {
+    "files":              "object: {workspace file: [texts it must contain]} after the case",
+    "plan_closed":        "bool: the last plan had no open steps (all done or blocked)",
     "tools":              "list: each of these tools was called",
     "no_tools":           "list: none of these tools was called",
     "reply_contains":     "list: each appears in the reply (case-insensitive)",
@@ -97,7 +99,7 @@ def _gate(turn: dict) -> dict:
     return next((s["data"] for s in turn.get("spans", []) if s["kind"] == "gate"), {})
 
 
-def case_checks(expect: dict, turn: dict, facts: list[str]) -> dict[str, bool]:
+def case_checks(expect: dict, turn: dict, facts: list[str], workspace: Path | None = None) -> dict[str, bool]:
     """Apply a case's expectations to its last turn. Returns {check: passed}."""
     unknown = set(expect) - set(EXPECT_KEYS)
     if unknown:
@@ -129,6 +131,16 @@ def case_checks(expect: dict, turn: dict, facts: list[str]) -> dict[str, bool]:
         out[f"at most {expect['max_facts']} facts"] = len(facts) <= expect["max_facts"]
     if "max_cost_usd" in expect:
         out[f"cost <= ${expect['max_cost_usd']}"] = (turn.get("cost_usd") or 0) <= expect["max_cost_usd"]
+    for name, texts in (expect.get("files") or {}).items():
+        path = (workspace / name) if workspace else None
+        content = path.read_text(encoding="utf-8").lower() if path and path.is_file() else None
+        out[f"wrote {name}"] = content is not None
+        for text in texts:
+            out[f"{name} has {text!r}"] = content is not None and text.lower() in content
+    if "plan_closed" in expect:
+        plans = [s["data"] for s in turn.get("spans", []) if s["kind"] == "plan" and s.get("name") == "plan"]
+        closed = bool(plans) and not any(st["status"] in ("pending", "in_progress") for st in plans[-1]["steps"])
+        out["plan closed"] = closed == bool(expect["plan_closed"])
     return out
 
 
@@ -289,7 +301,7 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
                 session = turn.get("session_id")
                 spent += turn.get("cost_usd") or 0
             facts = [f["content"] for f in agent.store.list_facts()]
-            checks = case_checks(case.get("expect", {}), turn, facts)
+            checks = case_checks(case.get("expect", {}), turn, facts, Path(home) / "workspace")
             verdict = None
             if "judge_min" in case.get("expect", {}):
                 verdict = judge(client, judge_model, turn["message"], turn.get("reply") or "",

@@ -103,6 +103,7 @@ class Settings:
     workspace: bool = True                  # the bundled workspace MCP server
     notes: bool = False                     # Apple Notes (tools/notes_server.py); macOS asks once
     calendar: bool = False                  # the Mac's Calendar app (tools/calendar_server.py)
+    planner: bool = True                    # plan + completion check on multi-step requests
     google_calendar: str = ""               # "" = on once signed in (google login); "1" / "0" to force
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
@@ -170,6 +171,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         notes=_flag("SORA_NOTES", d.notes),
         calendar=_flag("SORA_CALENDAR", d.calendar),
+        planner=_flag("SORA_PLANNER", d.planner),
         google_calendar=os.getenv("SORA_GOOGLE_CALENDAR", d.google_calendar).strip(),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
@@ -441,7 +443,8 @@ class Sora:
                 system = build_system(self.soul_path.read_text(encoding="utf-8"),
                                       datetime.now().astimezone(), self.skills.catalog(),
                                       matched, lessons, found, self.limits, channel=source,
-                                      tool_notes=tool_notes, planning=found.complex or long)
+                                      tool_notes=tool_notes,
+                                      planning=s.planner and (found.complex or long))
                 self.plan.reset(notify)
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
@@ -455,7 +458,8 @@ class Sora:
                                   effort=s.effort,
                                   max_iterations=s.long_iterations if long else s.max_iterations,
                                   compact_at=s.compact_at,
-                                  budget_usd=s.long_budget_usd if long else 0.0, plan=self.plan)
+                                  budget_usd=s.long_budget_usd if long else 0.0,
+                                  plan=self.plan if s.planner else None)
                 status = ("refused" if result.stop_reason == "refusal"
                           else "budget" if result.budget_reached
                           else "limit" if result.limit_reached else "ok")
@@ -584,7 +588,10 @@ def eval_setup():
     embedder = Embedder(settings.models_dir, settings.embedding_model) if settings.embeddings else None
 
     def factory(home: Path, tr: Tracer) -> Sora:
-        return Sora(replace(settings, home=home, auto_judge=False), client, tracer=tr,
+        # Never the user's real Notes, Calendar or Google account: eval cases run unattended
+        # and some of them write things.
+        return Sora(replace(settings, home=home, auto_judge=False, notes=False, calendar=False,
+                            google_calendar="0"), client, tracer=tr,
                     embedder=embedder)   # one model load for the whole run
 
     return tracer, judge_provider, settings.model, judge_model, factory
