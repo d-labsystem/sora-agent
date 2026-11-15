@@ -116,6 +116,19 @@ class Settings:
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
     otel_content: str = ""                  # "" = text to local endpoints only; "1" always; "0" never
+    # WhatsApp (harness/whatsapp.py): twilio | meta; empty = whichever has credentials
+    whatsapp_provider: str = ""
+    whatsapp_allowed: str = ""              # comma-separated numbers allowed to talk to sora
+    whatsapp_port: int = 8766
+    whatsapp_public_url: str = ""           # the tunnel's https URL, if Host headers can't be trusted
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    whatsapp_from: str = "whatsapp:+14155238886"   # Twilio's sandbox number
+    whatsapp_access_token: str = ""         # Meta Cloud API
+    whatsapp_phone_number_id: str = ""
+    whatsapp_app_secret: str = ""
+    whatsapp_verify_token: str = ""
+    whatsapp_graph_version: str = "v23.0"
     # Shared by every home, so eval cases (each in a fresh home) reuse one download.
     models_dir: Path = Path.home() / ".sora" / "models"
 
@@ -166,6 +179,18 @@ def load_settings(home: Path | str | None = None) -> Settings:
         # LANGFUSE_BASE_URL is the newer SDKs' name for the same thing
         langfuse_host=os.getenv("LANGFUSE_HOST") or os.getenv("LANGFUSE_BASE_URL") or d.langfuse_host,
         otel_content=os.getenv("SORA_OTEL_CONTENT", d.otel_content),
+        whatsapp_provider=os.getenv("SORA_WHATSAPP_PROVIDER", d.whatsapp_provider).strip().lower(),
+        whatsapp_allowed=os.getenv("SORA_WHATSAPP_ALLOWED", d.whatsapp_allowed),
+        whatsapp_port=int(os.getenv("SORA_WHATSAPP_PORT", d.whatsapp_port)),
+        whatsapp_public_url=os.getenv("SORA_WHATSAPP_PUBLIC_URL", d.whatsapp_public_url),
+        twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", d.twilio_account_sid),
+        twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", d.twilio_auth_token),
+        whatsapp_from=os.getenv("SORA_WHATSAPP_FROM", d.whatsapp_from),
+        whatsapp_access_token=os.getenv("WHATSAPP_ACCESS_TOKEN", d.whatsapp_access_token),
+        whatsapp_phone_number_id=os.getenv("WHATSAPP_PHONE_NUMBER_ID", d.whatsapp_phone_number_id),
+        whatsapp_app_secret=os.getenv("WHATSAPP_APP_SECRET", d.whatsapp_app_secret),
+        whatsapp_verify_token=os.getenv("SORA_WHATSAPP_VERIFY_TOKEN", d.whatsapp_verify_token),
+        whatsapp_graph_version=os.getenv("SORA_WHATSAPP_GRAPH_VERSION", d.whatsapp_graph_version),
         models_dir=Path(os.getenv("SORA_MODELS_DIR", str(d.models_dir))).expanduser(),
     )
 
@@ -210,9 +235,18 @@ def capability_limits(capabilities: dict[str, bool], settings: Settings) -> list
     return lines
 
 
+# How replies should look on each way in. Goes in the per-turn block, after
+# the cache breakpoint, so chat and WhatsApp turns share the cached prefix.
+CHANNEL_NOTES = {
+    "whatsapp": ("The user is reading this on WhatsApp, on a phone. Keep replies short and "
+                 "conversational. Plain text with simple *bold* and short lists is fine; no tables, "
+                 "headings or charts, since WhatsApp can't show them."),
+}
+
+
 def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
                  lessons: list[str], found: GateResult | None,
-                 limits: list[str] | None = None) -> list[dict]:
+                 limits: list[str] | None = None, channel: str = "") -> list[dict]:
     """Two blocks, split at the cache breakpoint.
 
     Prompt caching matches the prompt byte for byte from the start, and the API
@@ -228,6 +262,8 @@ def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
         stable.append("## Skills\nReusable procedures. If a request fits one whose steps aren't "
                       "in this prompt, call load_skill.\n" + catalog)
     turn = [f"Current local time: {now.strftime('%A %d %B %Y, %H:%M %Z')}"]
+    if channel in CHANNEL_NOTES:
+        turn.append(CHANNEL_NOTES[channel])
     for skill in matched:
         turn.append(f"## Skill: {skill.name}\nFollow these steps for this request:\n{skill.body}")
     if lessons:
@@ -365,7 +401,7 @@ class Sora:
                 matched = self.skills.match(message)
                 system = build_system(self.soul_path.read_text(encoding="utf-8"),
                                       datetime.now().astimezone(), self.skills.catalog(),
-                                      matched, lessons, found, self.limits)
+                                      matched, lessons, found, self.limits, channel=source)
                 tool_names = [t["name"] for t in self.registry.describe()]
                 tool_notes = self.lessons.tool_notes(tool_names)
                 notify("context", name="prompt context", facts=len(found.facts),

@@ -379,6 +379,12 @@ def make_server(agent: Sora, port: int, watch_interval: float = 1.0) -> Threadin
 def serve(agent: Sora, port: int) -> None:
     server = make_server(agent, port)
     print(f"sora dashboard: http://127.0.0.1:{port}  (Ctrl+C to stop)", flush=True)
+    # WhatsApp, when configured, runs in this same process: one agent, one memory.
+    from harness import whatsapp
+    started = whatsapp.start(agent, agent.settings)
+    if started:
+        print(f"sora WhatsApp webhook: http://127.0.0.1:{agent.settings.whatsapp_port}{whatsapp.PATH} "
+              f"via {started[1].provider.name} (expose it with a tunnel)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

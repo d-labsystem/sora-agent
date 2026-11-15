@@ -221,6 +221,34 @@ def format_status(status: dict) -> str:
     return "\n".join(rows)
 
 
+def whatsapp_command(args, out: IO[str]) -> int:
+    """The webhook alone, in the foreground (the dashboard isn't started)."""
+    import threading
+    from harness import whatsapp
+    from harness.app import create, load_settings
+    settings = load_settings(args.home)
+    setup_logging(settings.home / "logs")
+    provider, why = whatsapp.provider_from(settings)
+    if provider is None or not settings.whatsapp_allowed:
+        out.write(f"WhatsApp isn't set up: {why or 'set SORA_WHATSAPP_ALLOWED to your number'}\n")
+        return 1
+    agent = create(args.home)
+    server, gateway = whatsapp.start(agent, settings)
+    out.write(f"sora WhatsApp webhook: http://127.0.0.1:{settings.whatsapp_port}{whatsapp.PATH} via "
+              f"{provider.name}. Expose it with: cloudflared tunnel --url http://localhost:{settings.whatsapp_port}"
+              f"  (Ctrl+C to stop)\n")
+    out.flush()
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        gateway.stop()
+        agent.close()
+    return 0
+
+
 def otel_backfill(settings, tracer, source, since, out: IO[str]) -> int:
     """Send finished turns from traces.db to the OTel destinations. Each turn
     keeps its trace id, so sending one twice updates it rather than copying."""
@@ -303,7 +331,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     ask.add_argument("message", nargs="+")
     ask.add_argument("--long", action="store_true",
                      help="run as a long task: more steps, a dollar cap, compaction")
-    sub.add_parser("serve", help="run the web dashboard")
+    sub.add_parser("serve", help="run the web dashboard (and WhatsApp, when configured)")
+    sub.add_parser("whatsapp", help="run only the WhatsApp webhook")
     ev = sub.add_parser("eval", help="run an eval dataset")
     ev.add_argument("dataset")
     ev.add_argument("--min-pass", default="0")
@@ -359,6 +388,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "memory":     # works on the stores directly; no agent, no model calls
         return memory_command(args, out)
+
+    if command == "whatsapp":
+        return whatsapp_command(args, out)
 
     if command == "serve":
         from harness import web

@@ -46,5 +46,8 @@ def no_real_trace_export(monkeypatch):
     """Tests never send to the Phoenix or Langfuse set in the project's .env.
     Empty values win: load_dotenv doesn't override variables already set."""
     for name in ("SORA_PHOENIX_ENDPOINT", "SORA_PHOENIX_API_KEY", "LANGFUSE_PUBLIC_KEY",
-                 "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL"):
+                 "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL",
+                 # and never answer or send WhatsApp messages with the real accounts
+                 "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "WHATSAPP_ACCESS_TOKEN",
+                 "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "SORA_WHATSAPP_ALLOWED"):
         monkeypatch.setenv(name, "")
