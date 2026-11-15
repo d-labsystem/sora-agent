@@ -48,6 +48,7 @@ from memory import mirror
 from memory.backends import open_memory
 from ops.pricing import add_prices, known_price
 from ops.evals import append_case, judge, trace_to_case, turn_checks
+from ops import otel
 from ops.tracing import Tracer
 from tools import workspace_server
 from tools.builtin import TurnContext, register_builtins
@@ -108,6 +109,13 @@ class Settings:
     database_url: str = ""                  # Postgres, for pgvector and langgraph
     consolidator: str = "sora"              # sora | langmem (needs memory_backend=langgraph)
     memory_mirror: bool = True              # keep <home>/MEMORY.md up to date
+    # OpenTelemetry copies of each finished turn (ops/otel.py); off unless an endpoint is set
+    phoenix_endpoint: str = ""              # e.g. http://localhost:6006
+    phoenix_api_key: str = ""               # only when Phoenix has sign-in on
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    otel_content: str = ""                  # "" = text to local endpoints only; "1" always; "0" never
     # Shared by every home, so eval cases (each in a fresh home) reuse one download.
     models_dir: Path = Path.home() / ".sora" / "models"
 
@@ -151,6 +159,12 @@ def load_settings(home: Path | str | None = None) -> Settings:
         database_url=os.getenv("SORA_DATABASE_URL", d.database_url),
         consolidator=os.getenv("SORA_CONSOLIDATOR", d.consolidator).strip().lower(),
         memory_mirror=_flag("SORA_MEMORY_MIRROR", d.memory_mirror),
+        phoenix_endpoint=os.getenv("SORA_PHOENIX_ENDPOINT", d.phoenix_endpoint),
+        phoenix_api_key=os.getenv("SORA_PHOENIX_API_KEY", d.phoenix_api_key),
+        langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", d.langfuse_public_key),
+        langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", d.langfuse_secret_key),
+        langfuse_host=os.getenv("LANGFUSE_HOST", d.langfuse_host),
+        otel_content=os.getenv("SORA_OTEL_CONTENT", d.otel_content),
         models_dir=Path(os.getenv("SORA_MODELS_DIR", str(d.models_dir))).expanduser(),
     )
 
@@ -282,6 +296,12 @@ class Sora:
         self.lessons = LessonStore(home / "memory.db")
         self.skills = SkillLibrary(home / "skills")
         self.tracer = tracer or Tracer(home / "traces.db")
+        if self.tracer.sink is None:        # a shared tracer (evals) is set up once
+            self.otel = otel.from_settings(settings)
+            if self.otel:
+                self.tracer.sink = self.otel.export
+        else:
+            self.otel = getattr(self.tracer.sink, "__self__", None)
         self.context = TurnContext()
         self.lock = threading.Lock()
 
@@ -319,6 +339,8 @@ class Sora:
     def close(self) -> None:
         if self.mcp:
             self.mcp.close()
+        if self.otel:
+            self.otel.flush()               # queued spans go out before we stop
         self.store.close()
 
     # ---- one turn
@@ -453,6 +475,9 @@ class Sora:
                                   else "words only"),
                 "memory": {"backend": self.store.semantic.name, "consolidator": s.consolidator,
                            "mirror": str(s.home / "MEMORY.md") if s.memory_mirror else None},
+                "otel": [{"name": t.name, "endpoint": t.endpoint, "content": t.content,
+                          **self.otel.delivery().get(t.name, {})}
+                         for t in (self.otel.targets if self.otel else [])],
                 "web_limits": {"searches": s.web_max_searches, "fetches": s.web_max_fetches,
                                "fetch_tokens": s.web_fetch_max_tokens},
                 "home": str(s.home), "tools": self.registry.describe(),

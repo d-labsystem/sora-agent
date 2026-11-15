@@ -182,12 +182,19 @@ class Turn:
                  llm["i"], llm["o"], llm["cr"], llm["cw"], llm["w"], round(llm["c"], 6), tools["n"], tools["bad"],
                  self.elapsed_ms(), now_iso(), self.id))
             t.conn.commit()
-        return t.turn(self.id)
+        finished = t.turn(self.id)
+        if t.sink is not None:          # e.g. OpenTelemetry export (ops/otel.py)
+            try:
+                t.sink(finished)
+            except Exception:           # a copy of the trace must never break the turn
+                pass
+        return finished
 
 
 class Tracer:
     def __init__(self, path: Path):
         self.path = path
+        self.sink: Callable[[dict], None] | None = None   # gets every finished turn
         self.lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=10)
         self.conn.row_factory = sqlite3.Row
@@ -314,6 +321,16 @@ class Tracer:
         all_input = head["input_tokens"] + head["cache_read_tokens"] + head["cache_write_tokens"]
         head["cache_hit_rate"] = head["cache_read_tokens"] / all_input if all_input else 0.0
         return head
+
+    def finished_ids(self, source: str | None = None, since: str | None = None) -> list[str]:
+        """Ids of finished turns, oldest first."""
+        sql, params = "SELECT id FROM turns WHERE ended_at IS NOT NULL", []
+        if source:
+            sql, params = sql + " AND source = ?", [*params, source]
+        if since:
+            sql, params = sql + " AND started_at >= ?", [*params, since]
+        with self.lock:
+            return [r[0] for r in self.conn.execute(sql + " ORDER BY started_at", params)]
 
     def export_jsonl(self, out: IO[str], source: str | None = None, since: str | None = None) -> int:
         """Write one JSON object per finished turn, with its spans. Returns the count.

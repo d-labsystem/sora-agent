@@ -202,6 +202,9 @@ def format_status(status: dict) -> str:
             + (", ".join(t["name"] for t in status["tools"] if t["source"] == prov.get("main")) or "none"),
             *[f"limit {line}" for line in prov.get("limits", [])],
             f"home  {status['home']}"]
+    if status.get("otel"):
+        rows.append("otel  " + ", ".join(f"{t['name']} {t['endpoint']}"
+                                         + ("" if t["content"] else " (no text)") for t in status["otel"]))
     if status.get("memory"):
         m = status["memory"]
         rows.append(f"memory {m['backend']}, {status.get('memory_search', '')}, consolidated by "
@@ -216,6 +219,37 @@ def format_status(status: dict) -> str:
         rows.append("skill errors:")
         rows += [f"  {e}" for e in status["skill_errors"]]
     return "\n".join(rows)
+
+
+def otel_backfill(settings, tracer, source, since, out: IO[str]) -> int:
+    """Send finished turns from traces.db to the OTel destinations. Each turn
+    keeps its trace id, so sending one twice updates it rather than copying."""
+    from ops import otel
+    targets = otel.destinations(settings)
+    if not targets:
+        out.write("No OTel destination set: add SORA_PHOENIX_ENDPOINT, or LANGFUSE_PUBLIC_KEY "
+                  "and LANGFUSE_SECRET_KEY, to .env\n")
+        return 1
+    try:
+        exporter = otel.OTelExporter(targets)
+    except ImportError as exc:
+        out.write(f"OTel packages missing: uv sync --extra otel ({exc})\n")
+        return 1
+    sent = 0
+    for turn_id in tracer.finished_ids(source=source, since=since):
+        exporter.export(tracer.turn(turn_id))
+        sent += 1
+    exporter.close()                         # waits for the queue to drain
+    delivery = exporter.delivery()
+    out.write(f"exported {sent} turns\n")
+    failed = False
+    for t in targets:
+        d = delivery[t.name]
+        failed |= d["rejected"] > 0
+        out.write(f"  {t.name} ({'with' if t.content else 'without'} text): {d['accepted']} spans accepted"
+                  + (f", {d['rejected']} REJECTED (see logs/sora.log; HTTP 401 means it needs a key)"
+                     if d["rejected"] else "") + "\n")
+    return 1 if failed else 0
 
 
 def memory_command(args, out: IO[str]) -> int:
@@ -279,6 +313,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
+    ex.add_argument("--otel", action="store_true",
+                    help="send turns to the configured Phoenix/Langfuse instead of writing JSONL")
+    ex.add_argument("--since", help="only turns started on or after this date (YYYY-MM-DD)")
     sub.add_parser("status", help="model, tools, MCP servers and skills")
     mem = sub.add_parser("memory", help="move facts between backends, or rewrite MEMORY.md")
     mem_sub = mem.add_subparsers(dest="action", required=True)
@@ -300,10 +337,13 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings
         from ops.tracing import Tracer
-        tracer = Tracer(load_settings(args.home).home / "traces.db")
+        settings = load_settings(args.home)
+        tracer = Tracer(settings.home / "traces.db")
+        if args.otel:
+            return otel_backfill(settings, tracer, args.source, args.since, out)
         target = args.output.open("w", encoding="utf-8") if args.output else out
         try:
-            count = tracer.export_jsonl(target, source=args.source)
+            count = tracer.export_jsonl(target, source=args.source, since=args.since)
         finally:
             if args.output:
                 target.close()

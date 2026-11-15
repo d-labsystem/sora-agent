@@ -82,6 +82,8 @@ def _record(result: LoopResult, step: Step, notify: Notify, iteration: int, ms: 
            stop_reason=step.stop_reason, input_tokens=u.input_tokens,
            output_tokens=u.output_tokens, cache_read_tokens=u.cache_read,
            cache_write_tokens=u.cache_write, web_searches=u.web_searches, cost_usd=spent,
+           # what the model wrote in this step (the trace viewers show it as the output)
+           **({"output": step.text[:TRACE_OUTPUT_CHARS]} if step.text else {}),
            **({"reasoning_tokens": u.reasoning_tokens} if u.reasoning_tokens else {}))
     for kind, data in step.server_events:
         notify(kind, **data)
