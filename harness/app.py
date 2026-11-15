@@ -50,7 +50,8 @@ from ops.pricing import add_prices, known_price
 from ops.evals import append_case, judge, trace_to_case, turn_checks
 from ops import otel
 from ops.tracing import Tracer
-from tools import workspace_server
+from tools import gcal_server, google_auth, notes_server, workspace_server
+from tools.approvals import Approvals
 from tools.builtin import TurnContext, register_builtins
 from tools.visuals import VISUAL_TOOLS, visual_tools
 from tools.mcp_client import MCPManager, load_config
@@ -99,6 +100,8 @@ class Settings:
     web_fetch_max_tokens: int = 20000       # per fetched page or PDF; 0 = unlimited
     code_execution: bool = False            # run code in the provider's sandbox (off: chat doesn't need it)
     workspace: bool = True                  # the bundled workspace MCP server
+    notes: bool = False                     # Apple Notes (tools/notes_server.py); macOS asks once
+    google_calendar: str = ""               # "" = on once signed in (google login); "1" / "0" to force
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
     embeddings: bool = True                 # search memory by meaning (local model)
@@ -163,6 +166,8 @@ def load_settings(home: Path | str | None = None) -> Settings:
         web_fetch_max_tokens=int(os.getenv("SORA_WEB_FETCH_MAX_TOKENS", d.web_fetch_max_tokens)),
         code_execution=_flag("SORA_CODE_EXECUTION", d.code_execution),
         workspace=_flag("SORA_WORKSPACE", d.workspace),
+        notes=_flag("SORA_NOTES", d.notes),
+        google_calendar=os.getenv("SORA_GOOGLE_CALENDAR", d.google_calendar).strip(),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
         embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
@@ -353,6 +358,10 @@ class Sora:
                                      server_source=self.provider.name)
         self.limits = capability_limits(self.provider.capabilities, settings)
         register_builtins(self.registry, self.store, self.skills, self.context)
+        # Actions that reach other people wait for the user's reply (tools/approvals.py).
+        self.approvals = Approvals(self.context)
+        for tool in self.approvals.tools():
+            self.registry.register(tool)
         for tool in visual_tools():
             self.registry.register(tool)
         self.mcp: MCPManager | None = None
@@ -368,10 +377,21 @@ class Sora:
             config = {}
         if self.settings.workspace and "workspace" not in config:
             config["workspace"] = workspace_server.config(home)
+        if self.settings.notes and "notes" not in config:
+            config["notes"] = notes_server.config()
+        if self.calendar_on() and "calendar" not in config:
+            config["calendar"] = gcal_server.config(home)
         if config:
             self.mcp = MCPManager(config, home / "logs")
             self.mcp.start()
             self.mcp.register(self.registry)
+            self.approvals.guard(self.registry)        # after the tools it guards exist
+
+    def calendar_on(self) -> bool:
+        choice = self.settings.google_calendar
+        if choice in ("0", "1"):
+            return choice == "1"
+        return (self.settings.home / google_auth.TOKEN_FILE).is_file()     # on once signed in
 
     def close(self) -> None:
         if self.mcp:
@@ -519,6 +539,9 @@ class Sora:
                                "fetch_tokens": s.web_fetch_max_tokens},
                 "home": str(s.home), "tools": self.registry.describe(),
                 "mcp": self.mcp.status() if self.mcp else [],
+                "connectors": {"notes": s.notes, "google_calendar": self.calendar_on(),
+                               "google_signed_in": (s.home / google_auth.TOKEN_FILE).is_file(),
+                               "approval_needed_for": sorted(self.approvals.originals)},
                 "skills": [{"name": k.name, "description": k.description, "triggers": k.triggers,
                             "bundled": k.bundled, **k.extra} for k in self.skills.all().values()],
                 "skill_errors": self.skills.errors}

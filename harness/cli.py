@@ -221,6 +221,32 @@ def format_status(status: dict) -> str:
     return "\n".join(rows)
 
 
+def google_command(args, out: IO[str]) -> int:
+    from harness.app import load_settings
+    from tools import google_auth
+    home = load_settings(args.home).home
+    try:
+        if args.action == "login":
+            scopes = google_auth.login(home)
+            out.write(f"Signed in to Google. Granted: {scopes}\nToken saved to "
+                      f"{home / google_auth.TOKEN_FILE} (only you can read it). "
+                      f"Calendar tools turn on the next time sora starts.\n")
+        elif args.action == "logout":
+            done = google_auth.logout(home)
+            out.write("Signed out: access revoked at Google and the local token deleted.\n" if done
+                      else "Not signed in.\n")
+        else:
+            token = google_auth.load_token(home)
+            out.write(("Signed in to Google" if token else "Not signed in") + "\n")
+            if token:
+                google_auth.access_token(home)            # proves the refresh token still works
+                out.write("Token works.\n")
+        return 0
+    except google_auth.AuthError as exc:
+        out.write(f"{exc}\n")
+        return 1
+
+
 def whatsapp_command(args, out: IO[str]) -> int:
     """The webhook alone, in the foreground (the dashboard isn't started)."""
     import threading
@@ -346,6 +372,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
                     help="send turns to the configured Phoenix/Langfuse instead of writing JSONL")
     ex.add_argument("--since", help="only turns started on or after this date (YYYY-MM-DD)")
     sub.add_parser("status", help="model, tools, MCP servers and skills")
+    goo = sub.add_parser("google", help="sign in to Google Calendar, or out")
+    goo.add_argument("action", choices=["login", "logout", "status"])
     mem = sub.add_parser("memory", help="move facts between backends, or rewrite MEMORY.md")
     mem_sub = mem.add_subparsers(dest="action", required=True)
     mig = mem_sub.add_parser("migrate", help="copy facts and episodes into another backend")
@@ -388,6 +416,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "memory":     # works on the stores directly; no agent, no model calls
         return memory_command(args, out)
+
+    if command == "google":     # the OAuth sign-in runs here, in your browser; no agent needed
+        return google_command(args, out)
 
     if command == "whatsapp":
         return whatsapp_command(args, out)

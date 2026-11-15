@@ -49,5 +49,7 @@ def no_real_trace_export(monkeypatch):
                  "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL",
                  # and never answer or send WhatsApp messages with the real accounts
                  "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "WHATSAPP_ACCESS_TOKEN",
-                 "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "SORA_WHATSAPP_ALLOWED"):
+                 "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "SORA_WHATSAPP_ALLOWED",
+                 # and never touch the real Apple Notes or Google Calendar
+                 "SORA_NOTES", "SORA_GOOGLE_CALENDAR"):
         monkeypatch.setenv(name, "")
