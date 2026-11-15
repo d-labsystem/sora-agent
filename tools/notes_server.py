@@ -40,15 +40,19 @@ MAX_LIST = 50
 MAX_HITS = 20
 TIMEOUT = 60              # seconds; Notes can be slow on a first, cold call
 
-# Every note's id, title, folder, date and text, in bulk (one Apple Event per
-# property instead of one per note: hundreds of notes in about a second).
+# Every note's id, title, folder, date and text, in bulk: one Apple Event per
+# property (or per folder), never one per note. Per-note calls took 20 s for 90
+# notes; bulk calls take a second or two.
 ALL_NOTES = """
 function run(argv) {
   const Notes = Application("Notes");
   const notes = Notes.notes;
   const ids = notes.id(), names = notes.name(), dates = notes.modificationDate();
   const locked = notes.passwordProtected();
-  const folders = notes.container().map(f => { try { return f.name(); } catch (e) { return ""; } });
+  // Folder per note, asked per folder (a handful of Apple Events), not per note (hundreds).
+  const folderOf = {};
+  Notes.folders().forEach(f => { const name = f.name(); f.notes.id().forEach(id => { folderOf[id] = name; }); });
+  const folders = ids.map(id => folderOf[id] || "");
   const withText = argv[0] === "text";
   const texts = withText ? notes.plaintext() : [];
   return JSON.stringify(ids.map((id, i) => ({
