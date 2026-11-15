@@ -201,7 +201,12 @@ def format_status(status: dict) -> str:
             + ("on" if prov.get("web_tools") else "off") + ", server tools: "
             + (", ".join(t["name"] for t in status["tools"] if t["source"] == prov.get("main")) or "none"),
             *[f"limit {line}" for line in prov.get("limits", [])],
-            f"home  {status['home']}", "tools:"]
+            f"home  {status['home']}"]
+    if status.get("memory"):
+        m = status["memory"]
+        rows.append(f"memory {m['backend']}, {status.get('memory_search', '')}, consolidated by "
+                    f"{m['consolidator']}" + (f", mirrored to {m['mirror']}" if m.get("mirror") else ""))
+    rows.append("tools:")
     rows += [f"  {t['name']:<28} {t['source']}" for t in status["tools"]]
     if status["mcp"]:
         rows.append("MCP servers:")
@@ -211,6 +216,40 @@ def format_status(status: dict) -> str:
         rows.append("skill errors:")
         rows += [f"  {e}" for e in status["skill_errors"]]
     return "\n".join(rows)
+
+
+def memory_command(args, out: IO[str]) -> int:
+    from harness.app import load_settings
+    from memory import mirror
+    from memory.backends import open_memory
+    from memory.embeddings import Embedder
+    settings = load_settings(args.home)
+    embedder = Embedder(settings.models_dir, settings.embedding_model) if settings.embeddings else None
+    if args.action == "mirror":
+        store = open_memory(settings)
+        try:
+            mirror.write(settings.home / "MEMORY.md", store.semantic, store.semantic.name)
+        finally:
+            store.close()
+        out.write(f"wrote {settings.home / 'MEMORY.md'}\n")
+        return 0
+    if args.source == args.to:
+        out.write("--from and --to are the same backend; nothing to copy\n")
+        return 1
+    try:
+        source = open_memory(settings, kind=args.source)
+        target = open_memory(settings, embedder, kind=args.to)
+    except ValueError as exc:
+        out.write(f"{exc}\n")
+        return 1
+    try:
+        copied = target.semantic.import_from(source.semantic)
+    finally:
+        source.close()
+        target.close()
+    out.write(f"copied {copied['facts']} facts and {copied['episodes']} episodes "
+              f"from {args.source} to {args.to}. Set SORA_MEMORY={args.to} to use it.\n")
+    return 0
 
 
 def setup_logging(folder: Path) -> None:
@@ -241,6 +280,12 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
     sub.add_parser("status", help="model, tools, MCP servers and skills")
+    mem = sub.add_parser("memory", help="move facts between backends, or rewrite MEMORY.md")
+    mem_sub = mem.add_subparsers(dest="action", required=True)
+    mig = mem_sub.add_parser("migrate", help="copy facts and episodes into another backend")
+    mig.add_argument("--to", required=True, choices=["sqlite", "pgvector", "langgraph"])
+    mig.add_argument("--from", dest="source", default="sqlite", choices=["sqlite", "pgvector", "langgraph"])
+    mem_sub.add_parser("mirror", help="rewrite MEMORY.md from the configured backend now")
     svc = sub.add_parser("service", help="run the dashboard in the background (macOS)")
     svc.add_argument("action", choices=["plist", "install", "status", "restart", "uninstall"])
     args = parser.parse_args(argv)
@@ -271,6 +316,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
         settings = load_settings(args.home)
         return service.main(args.action, settings.home, settings.port,
                             out=lambda line: out.write(line + "\n"))
+
+    if command == "memory":     # works on the stores directly; no agent, no model calls
+        return memory_command(args, out)
 
     if command == "serve":
         from harness import web

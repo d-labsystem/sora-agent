@@ -307,6 +307,9 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
             return {"id": case["id"], "turn_id": None, "passed": False, "checks": {},
                     "judge": None, "error": f"{type(exc).__name__}: {exc}", "cost_usd": 0}
         finally:
+            semantic = getattr(getattr(agent, "store", None), "semantic", None)
+            if semantic is not None and semantic.name != "sqlite":
+                semantic.clear()        # this case's scope in Postgres; a SQLite home is just deleted
             if agent is not None and hasattr(agent, "close"):
                 agent.close()           # e.g. stop the case's MCP servers
 

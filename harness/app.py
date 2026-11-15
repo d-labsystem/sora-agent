@@ -44,7 +44,8 @@ from memory.gate import GateResult, recall
 from memory.embeddings import DEFAULT_MODEL, Embedder
 from memory.learning import LessonStore, detect, reflect
 from memory.skills import Skill, SkillLibrary
-from memory.store import MemoryStore
+from memory import mirror
+from memory.backends import open_memory
 from ops.pricing import add_prices, known_price
 from ops.evals import append_case, judge, trace_to_case, turn_checks
 from ops.tracing import Tracer
@@ -102,6 +103,11 @@ class Settings:
     embeddings: bool = True                 # search memory by meaning (local model)
     embedding_model: str = DEFAULT_MODEL
     memory_min_similarity: float = 0.45
+    # Where facts and episodes live: sqlite | pgvector | langgraph (memory/backends/)
+    memory_backend: str = "sqlite"
+    database_url: str = ""                  # Postgres, for pgvector and langgraph
+    consolidator: str = "sora"              # sora | langmem (needs memory_backend=langgraph)
+    memory_mirror: bool = True              # keep <home>/MEMORY.md up to date
     # Shared by every home, so eval cases (each in a fresh home) reuse one download.
     models_dir: Path = Path.home() / ".sora" / "models"
 
@@ -141,6 +147,10 @@ def load_settings(home: Path | str | None = None) -> Settings:
         embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
         embedding_model=os.getenv("SORA_EMBEDDING_MODEL", d.embedding_model),
         memory_min_similarity=float(os.getenv("SORA_MEMORY_MIN_SIMILARITY", d.memory_min_similarity)),
+        memory_backend=os.getenv("SORA_MEMORY", d.memory_backend).strip().lower(),
+        database_url=os.getenv("SORA_DATABASE_URL", d.database_url),
+        consolidator=os.getenv("SORA_CONSOLIDATOR", d.consolidator).strip().lower(),
+        memory_mirror=_flag("SORA_MEMORY_MIRROR", d.memory_mirror),
         models_dir=Path(os.getenv("SORA_MODELS_DIR", str(d.models_dir))).expanduser(),
     )
 
@@ -262,7 +272,13 @@ class Sora:
         if embedder is None and settings.embeddings:
             embedder = Embedder(settings.models_dir, settings.embedding_model)   # loads lazily
         self.embedder = embedder
-        self.store = MemoryStore(home / "memory.db", embedder, settings.memory_min_similarity)
+        self.store = open_memory(settings, embedder)
+        if settings.consolidator not in ("sora", "langmem"):
+            raise ValueError(f"SORA_CONSOLIDATOR must be sora or langmem, not {settings.consolidator!r}")
+        if settings.consolidator == "langmem" and self.store.semantic.name != "langgraph":
+            raise ValueError("SORA_CONSOLIDATOR=langmem works on LangGraph's store: set SORA_MEMORY=langgraph")
+        if settings.memory_mirror:
+            mirror.attach(self.store, home / "MEMORY.md")
         self.lessons = LessonStore(home / "memory.db")
         self.skills = SkillLibrary(home / "skills")
         self.tracer = tracer or Tracer(home / "traces.db")
@@ -303,6 +319,7 @@ class Sora:
     def close(self) -> None:
         if self.mcp:
             self.mcp.close()
+        self.store.close()
 
     # ---- one turn
 
@@ -356,8 +373,13 @@ class Sora:
                     reflect(self.lessons, self.small, self.small_id, signals, message,
                             result.reply, result.tool_calls, turn.id,
                             previous if found.correction else None, notify=notify)
-                consolidate(self.store, self.small, self.small_id, session_id, notify,
-                            every=s.consolidate_every)
+                if s.consolidator == "langmem":
+                    from memory.langmem_consolidator import consolidate_langmem
+                    consolidate_langmem(self.store, s.small_model, self.small, self.small_id, session_id,
+                                        notify, every=s.consolidate_every)
+                else:
+                    consolidate(self.store, self.small, self.small_id, session_id, notify,
+                                every=s.consolidate_every)
 
                 # 9. checks and finish
                 checks = turn_checks({"status": status, "reply": result.reply,
@@ -429,6 +451,8 @@ class Sora:
                                                if known_price(m)]},
                 "memory_search": (f"hybrid ({s.embedding_model})" if self.store.embedder
                                   else "words only"),
+                "memory": {"backend": self.store.semantic.name, "consolidator": s.consolidator,
+                           "mirror": str(s.home / "MEMORY.md") if s.memory_mirror else None},
                 "web_limits": {"searches": s.web_max_searches, "fetches": s.web_max_fetches,
                                "fetch_tokens": s.web_fetch_max_tokens},
                 "home": str(s.home), "tools": self.registry.describe(),

@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import queue
+import re
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,7 +46,8 @@ from urllib.parse import parse_qs, urlsplit
 from harness.app import PROJECT, Sora, create, load_settings
 from harness.events import KEEPALIVE_SECONDS, Hub, Watcher, sse
 from memory.learning import LessonStore
-from memory.store import MemoryStore
+from memory import mirror
+from memory.backends import open_memory
 from ops.evals import load_cases, run_eval
 
 STATIC = Path(__file__).parent / "static"
@@ -71,7 +73,11 @@ class Dashboard:
     def __init__(self, agent: Sora, watch_interval: float = 1.0):
         self.agent = agent
         path = agent.settings.home / "memory.db"
-        self.memory = MemoryStore(path)
+        # Its own connection (and, for Postgres, its own backend connection);
+        # deletes made here rewrite MEMORY.md too.
+        self.memory = open_memory(agent.settings)
+        if agent.settings.memory_mirror:
+            mirror.attach(self.memory, agent.settings.home / "MEMORY.md")
         self.lessons = LessonStore(path)
         self.read_lock = threading.Lock()
         self.eval_lock = threading.Lock()
@@ -84,6 +90,7 @@ class Dashboard:
     def close(self) -> None:
         self.watcher.stop()
         self.hub.close()
+        self.memory.close()
 
     # ---- evals
 
@@ -341,8 +348,9 @@ def make_handler(dash: Dashboard):
                 return
             parts, _ = self._route()
             with dash.read_lock:
-                if len(parts) == 4 and parts[:2] == ["api", "memory"] and parts[3].isdigit():
-                    kind, row = parts[2], int(parts[3])
+                # ids are numbers in SQLite and Postgres, UUIDs in LangGraph's store
+                if len(parts) == 4 and parts[:2] == ["api", "memory"] and re.fullmatch(r"[\w-]{1,64}", parts[3]):
+                    kind, row = parts[2], int(parts[3]) if parts[3].isdigit() else parts[3]
                     delete = {"fact": dash.memory.delete_fact, "episode": dash.memory.delete_episode,
                               "lesson": dash.lessons.delete}.get(kind)
                     if delete:
