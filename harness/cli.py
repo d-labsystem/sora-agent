@@ -372,6 +372,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
                     help="send turns to the configured Phoenix/Langfuse instead of writing JSONL")
     ex.add_argument("--since", help="only turns started on or after this date (YYYY-MM-DD)")
     sub.add_parser("status", help="model, tools, MCP servers and skills")
+    cal = sub.add_parser("calendar", help="allow sora to use the Mac's Calendar, and list what it sees")
+    cal.add_argument("action", choices=["check"])
     goo = sub.add_parser("google", help="sign in to Google Calendar, or out")
     goo.add_argument("action", choices=["login", "logout", "status"])
     mem = sub.add_parser("memory", help="move facts between backends, or rewrite MEMORY.md")
@@ -416,6 +418,10 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "memory":     # works on the stores directly; no agent, no model calls
         return memory_command(args, out)
+
+    if command == "calendar":   # run it in Terminal: macOS asks the app that runs it
+        from tools import calendar_server
+        return calendar_server.check(lambda line: out.write(line + "\n"))
 
     if command == "google":     # the OAuth sign-in runs here, in your browser; no agent needed
         return google_command(args, out)

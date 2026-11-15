@@ -194,7 +194,7 @@ def test_expired_tokens_are_refreshed_and_saved(tmp_path):
 def guarded():
     calls = []
     registry = ToolRegistry()
-    registry.register(Tool("calendar__create_event", "", {"type": "object", "properties": {}},
+    registry.register(Tool("gcal__create_event", "", {"type": "object", "properties": {}},
                            lambda **a: calls.append(a) or "created"))
     context = TurnContext("s1", "t1")
     clock = [1000.0]
@@ -207,13 +207,13 @@ def guarded():
 
 def test_events_without_attendees_run_at_once():
     registry, _, calls, _, _ = guarded()
-    assert registry.execute("calendar__create_event", {"title": "Focus", "attendees": []}) == ("created", False)
+    assert registry.execute("gcal__create_event", {"title": "Focus", "attendees": []}) == ("created", False)
     assert len(calls) == 1
 
 
 def test_invites_wait_for_a_later_turn_and_run_exactly_as_drafted():
     registry, context, calls, _, approvals = guarded()
-    out, _ = registry.execute("calendar__create_event",
+    out, _ = registry.execute("gcal__create_event",
                               {"title": "Dinner", "start": "a", "end": "b", "attendees": ["priya@x.com"]})
     assert out.startswith("NOT DONE YET") and calls == []
     draft_id = next(iter(approvals.drafts))
@@ -228,7 +228,7 @@ def test_invites_wait_for_a_later_turn_and_run_exactly_as_drafted():
 
 def test_drafts_stay_in_their_conversation_and_expire():
     registry, context, calls, clock, approvals = guarded()
-    registry.execute("calendar__create_event", {"title": "x", "attendees": ["a@x.com"]})
+    registry.execute("gcal__create_event", {"title": "x", "attendees": ["a@x.com"]})
     draft_id = next(iter(approvals.drafts))
     context.session_id, context.turn_id = "other", "t9"
     assert "another conversation" in registry.execute("approve", {"draft_id": draft_id})[0]
@@ -243,7 +243,71 @@ def test_the_agent_wires_the_gate_and_reports_connectors(tmp_path):
     agent = Sora(Settings(home=tmp_path, memory_mirror=False), FakeClient([]), connect_mcp=False)
     assert agent.registry.get("approve") is not None
     status = agent.status()["connectors"]
-    assert status == {"notes": False, "google_calendar": False, "google_signed_in": False,
+    assert status == {"notes": False, "calendar": False, "google_calendar": False, "google_signed_in": False,
                       "approval_needed_for": []}
     google_auth.save_token(tmp_path, {"refresh_token": "rt"})
     assert agent.calendar_on()                                                # on once signed in
+
+
+# ---- the Mac's Calendar (EventKit faked)
+
+class FakeEventKit:
+    def __init__(self, status=3, events=()):
+        self._status, self._events, self.saved = status, list(events), []
+
+    def status(self):
+        return self._status
+
+    def calendars(self):
+        return [{"id": "c1", "title": "Home", "account": "iCloud", "writable": True, "default": True},
+                {"id": "c2", "title": "Holidays", "account": "Other", "writable": False, "default": False}]
+
+    def events(self, start, end, ids=None):
+        self.asked = (start, end, ids)
+        return self._events
+
+    def save(self, title, start, end, all_day, location, notes, calendar_id):
+        self.saved.append((title, start, end, all_day, calendar_id))
+        return {"id": "e1", "calendar": "Home"}
+
+
+def mac(fake):
+    from tools.calendar_server import MacCalendar
+    return MacCalendar(fake, zone="Asia/Kolkata")
+
+
+def ts(text):
+    from datetime import datetime
+    return datetime.fromisoformat(text).timestamp()
+
+
+def test_mac_calendar_lists_every_occurrence_in_local_time():
+    fake = FakeEventKit(events=[
+        {"id": "w", "title": "Gym", "start": ts("2026-11-20T07:00+05:30"), "end": ts("2026-11-20T08:00+05:30"),
+         "all_day": False, "location": "", "notes": "", "calendar": "Home", "recurring": True},
+        {"id": "h", "title": "Guru Nanak Jayanti", "start": ts("2026-11-19T00:00+05:30"),
+         "end": ts("2026-11-20T00:00+05:30"), "all_day": True, "location": "", "notes": "", "calendar": "Holidays",
+         "recurring": False}])
+    out = mac(fake).events("2026-11-19", "2026-11-20")
+    assert "Thu 19 Nov, all day  Guru Nanak Jayanti (Holidays)" in out
+    assert "Fri 20 Nov 07:00–08:00  Gym (Home, repeats)" in out
+    assert out.index("Guru Nanak") < out.index("Gym")                          # in time order
+    assert fake.asked[:2] == (ts("2026-11-19T00:00+05:30"), ts("2026-11-21T00:00+05:30"))
+    assert "default for new events" in mac(fake).calendars() and "(read only)" in mac(fake).calendars()
+
+
+def test_mac_calendar_creates_timed_and_all_day_events():
+    fake = FakeEventKit()
+    out = mac(fake).create("Focus", "2026-11-20T15:00", "2026-11-20T16:00")
+    assert fake.saved[-1] == ("Focus", ts("2026-11-20T15:00+05:30"), ts("2026-11-20T16:00+05:30"), False, None)
+    assert out == "Created: Fri 20 Nov 15:00–16:00  Focus (Home)"
+    out = mac(fake).create("Goa", "2026-11-21", "2026-11-23")
+    assert fake.saved[-1][1:4] == (ts("2026-11-21T00:00+05:30"), ts("2026-11-24T00:00+05:30"), True)
+    assert "Sat 21 Nov – Mon 23 Nov, all day  Goa" in out
+    with pytest.raises(ServerToolError):
+        mac(fake).create("x", "2026-11-20T16:00", "2026-11-20T15:00")
+
+
+def test_mac_calendar_explains_missing_permission():
+    with pytest.raises(ServerToolError, match="calendar check"):
+        mac(FakeEventKit(status=0)).events("2026-11-20", "2026-11-20")

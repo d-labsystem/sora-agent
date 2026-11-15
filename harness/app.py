@@ -50,7 +50,7 @@ from ops.pricing import add_prices, known_price
 from ops.evals import append_case, judge, trace_to_case, turn_checks
 from ops import otel
 from ops.tracing import Tracer
-from tools import gcal_server, google_auth, notes_server, workspace_server
+from tools import calendar_server, gcal_server, google_auth, notes_server, workspace_server
 from tools.approvals import Approvals
 from tools.builtin import TurnContext, register_builtins
 from tools.visuals import VISUAL_TOOLS, visual_tools
@@ -101,6 +101,7 @@ class Settings:
     code_execution: bool = False            # run code in the provider's sandbox (off: chat doesn't need it)
     workspace: bool = True                  # the bundled workspace MCP server
     notes: bool = False                     # Apple Notes (tools/notes_server.py); macOS asks once
+    calendar: bool = False                  # the Mac's Calendar app (tools/calendar_server.py)
     google_calendar: str = ""               # "" = on once signed in (google login); "1" / "0" to force
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
@@ -167,6 +168,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         code_execution=_flag("SORA_CODE_EXECUTION", d.code_execution),
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         notes=_flag("SORA_NOTES", d.notes),
+        calendar=_flag("SORA_CALENDAR", d.calendar),
         google_calendar=os.getenv("SORA_GOOGLE_CALENDAR", d.google_calendar).strip(),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
@@ -379,8 +381,10 @@ class Sora:
             config["workspace"] = workspace_server.config(home)
         if self.settings.notes and "notes" not in config:
             config["notes"] = notes_server.config()
-        if self.calendar_on() and "calendar" not in config:
-            config["calendar"] = gcal_server.config(home)
+        if self.settings.calendar and "calendar" not in config:
+            config["calendar"] = calendar_server.config()
+        if self.calendar_on() and "gcal" not in config:
+            config["gcal"] = gcal_server.config(home)
         if config:
             self.mcp = MCPManager(config, home / "logs")
             self.mcp.start()
@@ -539,7 +543,7 @@ class Sora:
                                "fetch_tokens": s.web_fetch_max_tokens},
                 "home": str(s.home), "tools": self.registry.describe(),
                 "mcp": self.mcp.status() if self.mcp else [],
-                "connectors": {"notes": s.notes, "google_calendar": self.calendar_on(),
+                "connectors": {"notes": s.notes, "calendar": s.calendar, "google_calendar": self.calendar_on(),
                                "google_signed_in": (s.home / google_auth.TOKEN_FILE).is_file(),
                                "approval_needed_for": sorted(self.approvals.originals)},
                 "skills": [{"name": k.name, "description": k.description, "triggers": k.triggers,

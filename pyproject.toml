@@ -27,6 +27,9 @@ otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.45",
     "opentelemetry-sdk>=1.45",
 ]
+calendar = [
+    "pyobjc-framework-eventkit>=11",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

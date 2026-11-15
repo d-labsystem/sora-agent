@@ -57,7 +57,7 @@ def invite_rule(args: dict) -> str | None:
 
 
 RULES: dict[str, Callable[[dict], str | None]] = {
-    "calendar__create_event": invite_rule,
+    "gcal__create_event": invite_rule,        # Google Calendar; the Mac's Calendar can't invite
 }
 
 
