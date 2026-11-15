@@ -27,6 +27,7 @@ from typing import Any
 from loop.compaction import compact, context_size, first_request
 from loop.providers import Step, as_provider
 from ops.pricing import cost
+from tools.planner import NUDGE
 from tools.registry import ToolRegistry
 
 Notify = Callable[..., None]
@@ -60,6 +61,7 @@ class LoopResult:
     server_calls: list[dict[str, Any]] = field(default_factory=list)   # web_search, web_fetch
     budget_reached: bool = False
     compactions: int = 0
+    plan_nudged: bool = False         # tried to finish with plan steps open, and was sent back
 
     @property
     def tool_errors(self) -> list[dict[str, Any]]:
@@ -121,12 +123,14 @@ def _compact(provider, model, system, messages, schemas, effort, task, result, n
 def run_loop(provider, model: str, system: System, messages: list, tools: ToolRegistry,
              notify: Notify, effort: str = "medium", max_iterations: int = 10,
              compact_at: int = 0,
-             budget_usd: float = 0.0) -> LoopResult:
+             budget_usd: float = 0.0, plan=None) -> LoopResult:
     """Run one turn. `provider` is a loop.providers Provider (or a bare
     Anthropic client). `messages` is appended to, except that compaction
     replaces it with a summary when the context passes `compact_at` tokens
     (0 = never). `budget_usd` (0 = none) stops tool use once the turn has
-    cost that much, then answers from what it has."""
+    cost that much, then answers from what it has. `plan` (tools/planner.py)
+    is this turn's checklist: finishing with steps still open sends the model
+    back once to close them."""
     provider = as_provider(provider)
     result = LoopResult(model=model)
     schemas = tools.schemas()
@@ -157,6 +161,16 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
 
         calls = step.tool_calls
         if not calls:
+            left = plan.open_steps() if plan is not None else []
+            if left and not result.plan_nudged and iteration < max_iterations:
+                # The completion check: once per turn, and never a wall. A step that
+                # can't be done gets marked blocked with a reason, and that closes it.
+                result.plan_nudged = True
+                steps = "; ".join(f"{plan.steps.index(s) + 1}. {s['title']}" for s in left)
+                notify("plan", name="completion check", open=len(left), steps=plan.steps)
+                notify("text", delta="\n\n")
+                messages.append({"role": "user", "content": NUDGE.format(steps=steps)})
+                continue
             result.reply = step.text
             return result
 
@@ -181,7 +195,10 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
             break
         size = context_size(step.usage)
         if compact_at and size >= next_try and iteration < max_iterations:
-            if _compact(provider, model, system, messages, schemas, effort, task, result, notify, size):
+            # The checklist goes into the continuation, so the plan outlives the summary.
+            now = (f"{task}\n\nYour plan so far (keep using update_plan):\n{plan.render()}"
+                   if plan is not None and plan.steps else task)
+            if _compact(provider, model, system, messages, schemas, effort, now, result, notify, size):
                 next_try = compact_at
             else:
                 next_try = int(size * RETRY_GROWTH)     # carry on as it is; try again later

@@ -52,6 +52,7 @@ from ops import otel
 from ops.tracing import Tracer
 from tools import calendar_server, gcal_server, google_auth, notes_server, workspace_server
 from tools.approvals import Approvals
+from tools.planner import PLAN_NOTE, Plan
 from tools.builtin import TurnContext, register_builtins
 from tools.visuals import VISUAL_TOOLS, visual_tools
 from tools.mcp_client import MCPManager, load_config
@@ -254,7 +255,7 @@ CHANNEL_NOTES = {
 def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
                  lessons: list[str], found: GateResult | None,
                  limits: list[str] | None = None, channel: str = "",
-                 tool_notes: dict[str, list[str]] | None = None) -> list[dict]:
+                 tool_notes: dict[str, list[str]] | None = None, planning: bool = False) -> list[dict]:
     """Two blocks, split at the cache breakpoint.
 
     Prompt caching matches the prompt byte for byte from the start, and the API
@@ -272,6 +273,8 @@ def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
     turn = [f"Current local time: {now.strftime('%A %d %B %Y, %H:%M %Z')}"]
     if channel in CHANNEL_NOTES:
         turn.append(CHANNEL_NOTES[channel])
+    if planning:
+        turn.append(PLAN_NOTE)      # per turn, after the breakpoint: the cached prefix stays the same
     for skill in matched:
         turn.append(f"## Skill: {skill.name}\nFollow these steps for this request:\n{skill.body}")
     if lessons:
@@ -370,6 +373,10 @@ class Sora:
         self.approvals = Approvals(self.context)
         for tool in self.approvals.tools():
             self.registry.register(tool)
+        # The checklist tool is always registered (a changing tool list would break the
+        # prompt cache); only complex turns are told to use it.
+        self.plan = Plan()
+        self.registry.register(self.plan.tool())
         for tool in visual_tools():
             self.registry.register(tool)
         self.mcp: MCPManager | None = None
@@ -434,7 +441,8 @@ class Sora:
                 system = build_system(self.soul_path.read_text(encoding="utf-8"),
                                       datetime.now().astimezone(), self.skills.catalog(),
                                       matched, lessons, found, self.limits, channel=source,
-                                      tool_notes=tool_notes)
+                                      tool_notes=tool_notes, planning=found.complex or long)
+                self.plan.reset(notify)
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
                        skills=[k.name for k in matched], tool_notes=sorted(tool_notes),
@@ -447,7 +455,7 @@ class Sora:
                                   effort=s.effort,
                                   max_iterations=s.long_iterations if long else s.max_iterations,
                                   compact_at=s.compact_at,
-                                  budget_usd=s.long_budget_usd if long else 0.0)
+                                  budget_usd=s.long_budget_usd if long else 0.0, plan=self.plan)
                 status = ("refused" if result.stop_reason == "refusal"
                           else "budget" if result.budget_reached
                           else "limit" if result.limit_reached else "ok")

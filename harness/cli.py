@@ -79,6 +79,12 @@ class Printer:
                 self.line(self.c(DIM, f"  ↳ learned: {lesson['lesson']}"))
         elif kind == "memory" and data.get("facts"):
             self.line(self.c(DIM, f"  ↳ saved {len(data['facts'])} fact(s) to long-term memory"))
+        elif kind == "plan" and data.get("name") == "plan":
+            marks = {"pending": "○", "in_progress": "◐", "done": "●", "blocked": "✗"}
+            self.line(self.c(DIM, "  ↳ plan: " + "  ".join(f"{marks[s['status']]} {s['title']}"
+                                                         for s in data.get("steps", []))))
+        elif kind == "plan":
+            self.line(self.c(DIM, f"  ↳ {data.get('open')} plan step(s) still open: sent back to finish them"))
 
     def finish(self) -> None:
         if self.mid_line:

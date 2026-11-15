@@ -32,6 +32,7 @@ GATE_FORMAT = schema({
     "retrieve": {"type": "boolean"},
     "query": {"type": "string"},
     "correction": {"type": "boolean"},
+    "complex": {"type": "boolean"},
     "reason": {"type": "string"},
 })
 
@@ -48,6 +49,10 @@ query: if retrieve is true, a few search keywords (names, topics), with
 pronouns resolved using the previous exchange. Empty otherwise.
 correction: true only if the new message says or implies the previous reply
 was wrong, unhelpful, or ignored an instruction.
+complex: true if doing what the user asks takes several distinct steps, such as
+researching or comparing several things, then combining them, or finding
+information and then saving, scheduling or writing something with it. False
+for a single question, chat, or one simple action.
 reason: one short sentence.
 
 {previous}New message:
@@ -60,6 +65,7 @@ class GateResult:
     query: str
     correction: bool
     reason: str
+    complex: bool = False          # several steps: the harness asks for a plan first
     facts: list[str] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
     failed: bool = False
@@ -81,7 +87,7 @@ def decide(client, model: str, message: str, last: dict | None, notify=None) -> 
         query = answer["query"].strip() or message
         return GateResult(bool(answer["retrieve"]), query,
                           bool(answer["correction"]) and last is not None,
-                          answer["reason"])
+                          answer["reason"], bool(answer.get("complex", False)))
     except Exception as exc:
         log.warning("retrieval gate failed, searching anyway: %s", exc)
         return GateResult(True, message, False, f"gate failed: {exc}", failed=True)
@@ -96,6 +102,6 @@ def recall(store: MemoryStore, client, model: str, session_id: str, message: str
         result.episodes = store.search_episodes(result.query, top_episodes)
     if notify:
         notify("gate", name="memory recall", retrieve=result.retrieve, query=result.query,
-               correction=result.correction, reason=result.reason, failed=result.failed,
+               correction=result.correction, complex=result.complex, reason=result.reason, failed=result.failed,
                facts=result.facts, episodes=result.episodes)
     return result

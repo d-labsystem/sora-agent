@@ -114,6 +114,15 @@ input.addEventListener("input", () => { input.style.height = "auto"; input.style
 input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
 
+// The model's checklist on multi-step requests, updated in place as steps finish.
+const PLAN_MARK = { pending: "○", in_progress: "◐", done: "●", blocked: "✗" };
+function showPlan(bot, steps) {
+  let list = bot.querySelector(".plan");
+  if (!list) { list = el("ol", { class: "plan" }); bot.querySelector(".body").before(list); }
+  clear(list);
+  for (const s of steps) list.append(el("li", { class: s.status, title: s.note || "" }, `${PLAN_MARK[s.status]} ${s.title}`));
+}
+
 async function send() {
   const text = input.value.trim();
   if (!text || chat.busy) return;
@@ -159,6 +168,11 @@ async function send() {
       case "reply": if (ev.reply != null) { streamed = ev.reply || "(no reply)"; setBody(body, streamed); } break;
       case "learning": for (const l of ev.lessons || []) step("learned", l.lesson, "ok"); break;
       case "memory": if (ev.facts?.length) step("saved", `${ev.facts.length} fact(s) to long-term memory`, "ok"); break;
+      case "plan":
+        if (ev.name === "completion check") { step("plan", `${ev.open} step(s) still open: sent back to finish`, "warn"); break; }
+        showPlan(bot, ev.steps);
+        step("plan", `${ev.steps.filter((s) => s.status === "done").length}/${ev.steps.length} done`);
+        break;
       case "error": step("error", ev.error, "bad"); break;
       case "done":
         if (ev.status === "error") { bot.classList.add("error"); body.textContent = ev.error || "Something went wrong."; }
