@@ -39,3 +39,12 @@ class FakeEmbedder:
 def fake_embedder(monkeypatch):
     import harness.app
     monkeypatch.setattr(harness.app, "Embedder", FakeEmbedder)
+
+
+@pytest.fixture(autouse=True)
+def no_real_trace_export(monkeypatch):
+    """Tests never send to the Phoenix or Langfuse set in the project's .env.
+    Empty values win: load_dotenv doesn't override variables already set."""
+    for name in ("SORA_PHOENIX_ENDPOINT", "SORA_PHOENIX_API_KEY", "LANGFUSE_PUBLIC_KEY",
+                 "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST", "LANGFUSE_BASE_URL"):
+        monkeypatch.setenv(name, "")

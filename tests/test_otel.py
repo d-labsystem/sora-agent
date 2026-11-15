@@ -170,3 +170,9 @@ def test_backfill_sends_finished_turns(tmp_path, monkeypatch):
     assert main(["--home", str(tmp_path), "export", "--otel"], out=out) == 0
     assert sent == ["one", "two"] and "exported 2 turns" in out.getvalue()
     assert "phoenix (with text): 8 spans accepted" in out.getvalue()
+
+
+def test_langfuse_base_url_is_read_as_the_host(tmp_path, monkeypatch):
+    from harness.app import load_settings
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
+    assert load_settings(tmp_path).langfuse_host == "https://us.cloud.langfuse.com"

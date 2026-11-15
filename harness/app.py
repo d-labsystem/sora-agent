@@ -163,7 +163,8 @@ def load_settings(home: Path | str | None = None) -> Settings:
         phoenix_api_key=os.getenv("SORA_PHOENIX_API_KEY", d.phoenix_api_key),
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", d.langfuse_public_key),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", d.langfuse_secret_key),
-        langfuse_host=os.getenv("LANGFUSE_HOST", d.langfuse_host),
+        # LANGFUSE_BASE_URL is the newer SDKs' name for the same thing
+        langfuse_host=os.getenv("LANGFUSE_HOST") or os.getenv("LANGFUSE_BASE_URL") or d.langfuse_host,
         otel_content=os.getenv("SORA_OTEL_CONTENT", d.otel_content),
         models_dir=Path(os.getenv("SORA_MODELS_DIR", str(d.models_dir))).expanduser(),
     )
