@@ -120,7 +120,7 @@ def _compact(provider, model, system, messages, schemas, effort, task, result, n
 
 def run_loop(provider, model: str, system: System, messages: list, tools: ToolRegistry,
              notify: Notify, effort: str = "medium", max_iterations: int = 10,
-             tool_notes: dict[str, list[str]] | None = None, compact_at: int = 0,
+             compact_at: int = 0,
              budget_usd: float = 0.0) -> LoopResult:
     """Run one turn. `provider` is a loop.providers Provider (or a bare
     Anthropic client). `messages` is appended to, except that compaction
@@ -129,7 +129,7 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
     cost that much, then answers from what it has."""
     provider = as_provider(provider)
     result = LoopResult(model=model)
-    schemas = tools.schemas(tool_notes)
+    schemas = tools.schemas()
     on_text = lambda delta: notify("text", delta=delta)   # text reaches the gateway as it streams
     task = first_request(messages)
     next_try = compact_at

@@ -78,12 +78,11 @@ def test_cost_is_counted_from_tokens():
     assert result.cost_usd == pytest.approx((10 * 4 + 5 * 20) / 1_000_000)
 
 
-def test_web_tools_are_sent_and_lessons_reach_tool_descriptions():
+def test_web_tools_are_sent_with_unchanging_descriptions():
     client = FakeClient([message(text("hi"))])
-    run_loop(client, "m", "s", [{"role": "user", "content": "hi"}], registry(), quiet,
-             tool_notes={"echo": ["Pass plain text only."]})
+    run_loop(client, "m", "s", [{"role": "user", "content": "hi"}], registry(), quiet)
     tools = client.requests[0]["tools"]
-    assert tools[0]["description"].endswith("- Pass plain text only.")
+    assert tools[0]["description"] == registry().get("echo").description
     assert {t["name"] for t in tools[1:]} == {"web_search", "web_fetch"}
     assert "eager_input_streaming" not in tools[1]
 

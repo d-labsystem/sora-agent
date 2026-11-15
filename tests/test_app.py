@@ -84,10 +84,13 @@ def test_tool_error_triggers_reflection_and_lesson_returns(tmp_path):
     assert turn["checks"]["no_tool_errors"] is False and turn["tool_errors"] == 1
     assert "review a turn" in small.seen
     assert [s["kind"] for s in turn["spans"]].count("learning") == 1
-    # next turn: the lesson is in load_skill's description
+    # next turn: the lesson reaches the model in the per-turn system block, and
+    # load_skill's description is untouched, so the cached tool prefix stays valid
     agent.respond("hello")
-    load_skill = next(t for t in client.requests[-1]["tools"] if t["name"] == "load_skill")
-    assert "Check the skill catalog for exact names" in load_skill["description"]
+    request = client.requests[-1]
+    load_skill = next(t for t in request["tools"] if t["name"] == "load_skill")
+    assert "Check the skill catalog" not in load_skill["description"]
+    assert "load_skill: Check the skill catalog for exact names" in request["system"][1]["text"]
 
 
 def test_correction_reflects_with_previous_reply(tmp_path):

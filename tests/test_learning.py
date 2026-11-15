@@ -70,12 +70,18 @@ def test_lessons_come_back(lessons):
     found = lessons.relevant("what's the weather in Pune?")
     assert found == ["When the user asks about weather: Search with the city name and today's date"]
     assert lessons.list()[-1]["uses"] == 1
-    # tool lessons stay out of the general prompt, and go into the tool description
+    # tool lessons stay out of the general lessons, and go into the per-turn prompt,
+    # never into the tool description (that would invalidate the prompt cache)
     assert lessons.relevant("YYYY") == []
     notes = lessons.tool_notes(["calendar__create", "current_time"])
     assert notes == {"calendar__create": ["Pass dates as YYYY-MM-DD"]}
     assert next(l for l in lessons.list() if l["tool"])["uses"] == 1
     registry = ToolRegistry()
     registry.register(Tool("calendar__create", "Create an event.", {"type": "object"}, lambda: ""))
-    description = registry.schemas(notes)[0]["description"]
-    assert description.endswith("Notes from past use:\n- Pass dates as YYYY-MM-DD")
+    assert registry.schemas()[0]["description"] == "Create an event."
+    from datetime import datetime
+    from harness.app import build_system
+    with_notes = build_system("soul", datetime(2026, 11, 16), "", [], [], None, tool_notes=notes)
+    without = build_system("soul", datetime(2026, 11, 16), "", [], [], None)
+    assert with_notes[0] == without[0]                                  # cached prefix unchanged
+    assert "- calendar__create: Pass dates as YYYY-MM-DD" in with_notes[1]["text"]

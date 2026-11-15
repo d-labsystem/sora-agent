@@ -99,20 +99,16 @@ class ToolRegistry:
                   for t in self.server_tools]
         return local + server
 
-    def schemas(self, notes: dict[str, list[str]] | None = None) -> list[dict[str, Any]]:
+    def schemas(self) -> list[dict[str, Any]]:
         """What the model sees on every call.
 
-        `notes` are lessons learned about a tool (memory/learning.py). They are
-        added to its description, so the model reads them as it picks a tool."""
-        notes = notes or {}
-        out = []
-        for t in self._tools.values():
-            description = t.description
-            if notes.get(t.name):
-                description += "\n\nNotes from past use:\n" + "\n".join(f"- {n}" for n in notes[t.name])
-            out.append({"name": t.name, "description": description,
-                        "input_schema": t.input_schema, "eager_input_streaming": True})
-        return out + self.server_tools
+        These must stay byte-for-byte the same from call to call: tools are
+        the first thing in the cached prompt prefix, so any change here (a
+        lesson appended to a description, say) invalidates the whole cache
+        and the next call re-writes ~10k tokens at full price. Lessons about
+        tools go in the system prompt's per-turn block instead (build_system)."""
+        return [{"name": t.name, "description": t.description, "input_schema": t.input_schema,
+                 "eager_input_streaming": True} for t in self._tools.values()] + self.server_tools
 
     def execute(self, name: str, args: Any) -> tuple[str, bool]:
         """Run one tool call and return (output, is_error).
