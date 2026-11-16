@@ -110,17 +110,43 @@ def _get(block, key: str, default=None):
 
 # ---- Anthropic
 
+SERVER_TEXT = 3000          # characters of a server tool's output kept for the trace (and the judge)
+
+
 def _server_results(block) -> dict[str, Any]:
-    """A short, traceable summary of what a server tool returned."""
+    """What a server tool returned, as evidence for the trace and the judge:
+    search hits (title, URL), the printed output of server-side code (with
+    today's web tools, the model filters search results in code and reads
+    that output), and the start of a fetched page's text. Outputs the
+    provider encrypts can't be read by anyone but the model; that's noted."""
     content = getattr(block, "content", None)
-    if isinstance(content, list):
-        return {"results": [{"title": getattr(r, "title", ""), "url": getattr(r, "url", "")}
+    if isinstance(content, list):                                      # web search hits
+        return {"results": [{"title": getattr(r, "title", ""), "url": getattr(r, "url", ""),
+                             **({"age": r.page_age} if getattr(r, "page_age", None) else {})}
                             for r in content][:10]}
     error = getattr(content, "error_code", None)
     if error:
         return {"error": error}
-    url = getattr(content, "url", None)
-    return {"url": url} if url else {}
+    out: dict[str, Any] = {}
+    if hasattr(content, "stdout") or hasattr(content, "encrypted_stdout"):   # code execution
+        stdout = getattr(content, "stdout", None)
+        if stdout:
+            out["stdout"] = stdout[:SERVER_TEXT]
+        elif getattr(content, "encrypted_stdout", None):
+            out["stdout"] = "(output encrypted by the provider: only the model could read it)"
+        if getattr(content, "stderr", ""):
+            out["stderr"] = content.stderr[:500]
+        return out
+    url = getattr(content, "url", None)                                 # web fetch
+    if url:
+        out["url"] = url
+        source = getattr(getattr(content, "content", None), "source", None)
+        data = getattr(source, "data", None)
+        if isinstance(data, str) and getattr(source, "type", "") == "text":
+            out["text"] = data[:SERVER_TEXT]
+        elif source is not None:
+            out["text"] = f"({getattr(source, 'media_type', 'a document')}, not text)"
+    return out
 
 
 ANTHROPIC_CODE_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}

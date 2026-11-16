@@ -239,3 +239,30 @@ def test_reply_checks_ignore_thousands_separators():
     assert all(checks.values())
     assert without_separators("in 2026, 2027") == "in 2026, 2027"        # a list of years stays a list
     assert without_separators("1, 2, 3") == "1, 2, 3"
+
+
+def test_server_tool_results_become_evidence():
+    from types import SimpleNamespace as NS
+    from loop.providers import _server_results
+    from ops.evals import tool_evidence
+    hits = _server_results(NS(content=[NS(title="K2 - Wikipedia", url="https://en.wikipedia.org/wiki/K2", page_age=None)]))
+    dated = _server_results(NS(content=[NS(title="K2", url="https://x.org", page_age="3 weeks ago")]))
+    assert dated["results"][0]["age"] == "3 weeks ago"
+    code = _server_results(NS(content=NS(stdout="K2: 8,611 m, first ascent 1954\n", stderr="", return_code=0)))
+    hidden = _server_results(NS(content=NS(encrypted_stdout="xyz", stderr="", return_code=0)))
+    page = _server_results(NS(content=NS(url="https://ex.org/k2", retrieved_at="",
+                                          content=NS(source=NS(type="text", data="K2 is 8,611 metres high.")))))
+    assert hits == {"results": [{"title": "K2 - Wikipedia", "url": "https://en.wikipedia.org/wiki/K2"}]}
+    assert code == {"stdout": "K2: 8,611 m, first ascent 1954\n"} and "encrypted" in hidden["stdout"]
+    assert page == {"url": "https://ex.org/k2", "text": "K2 is 8,611 metres high."}
+    turn = {"spans": [
+        {"kind": "server_tool", "name": "web_search", "data": {"input": {"query": "K2 height"}}},
+        {"kind": "server_result", "name": "web_search_tool_result", "data": hits},
+        {"kind": "server_tool", "name": "code_execution", "data": {"input": {"code": "res = await web_search(...)"}}},
+        {"kind": "server_result", "name": "code_execution_tool_result", "data": code},
+        {"kind": "server_result", "name": "web_fetch_tool_result", "data": page}]}
+    evidence = tool_evidence(turn)
+    assert "K2 - Wikipedia <https://en.wikipedia.org/wiki/K2>" in evidence
+    assert "output:\nK2: 8,611 m, first ascent 1954" in evidence
+    assert "page https://ex.org/k2:\nK2 is 8,611 metres high." in evidence
+    assert "not recorded" not in evidence

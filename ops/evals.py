@@ -239,8 +239,23 @@ def tool_evidence(turn: dict, per_call: int = 1500, total: int = 12000) -> str:
             clipped = output[:per_call] + (f" …[{len(output) - per_call} more chars]" if len(output) > per_call else "")
             lines.append(f"- {span['name']}({args}) ->\n{clipped}")
         elif span["kind"] == "server_tool":
-            what = (data.get("input") or {}).get("query") or (data.get("input") or {}).get("url") or ""
-            lines.append(f"- {span['name']}: {what} (results not recorded)")
+            args = data.get("input") or {}
+            what = args.get("query") or args.get("url") or (args.get("code") or "").strip().split("\n")[0][:120]
+            lines.append(f"- {span['name']}: {what}")
+        elif span["kind"] == "server_result":
+            # what the provider's server tools returned (web search, fetch, the code that filters results)
+            if data.get("results"):
+                lines.append("  results: " + "; ".join(
+                    f"{r.get('title', '')} <{r.get('url', '')}>" + (f" ({r['age']})" if r.get("age") else "")
+                    for r in data["results"][:8]))
+                lines.append("  (page contents of search hits are encrypted by the provider: titles, URLs and "
+                             "dates are all that can be checked)")
+            if data.get("url") and data.get("text"):
+                lines.append(f"  page {data['url']}:\n{str(data['text'])[:per_call]}")
+            if data.get("stdout"):
+                lines.append(f"  output:\n{str(data['stdout'])[:per_call]}")
+            if data.get("error"):
+                lines.append(f"  error: {data['error']}")
     text = "\n".join(lines)
     return (text[:total] + "\n…[more tool output not shown]") if len(text) > total else (text or "none")
 
