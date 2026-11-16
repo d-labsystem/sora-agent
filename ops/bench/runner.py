@@ -31,6 +31,7 @@ import random
 import urllib.request
 import uuid
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
@@ -102,23 +103,32 @@ def wilson(correct: int, total: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def run(bench: Benchmark, items: list[Item], factory, tracer, budget_usd: float, label: str = "",
-        model: str = "", progress: Callable[[dict], None] | None = None) -> dict:
-    """Run `items` until done or the budget is spent. Saved as an eval run."""
+        model: str = "", progress: Callable[[dict], None] | None = None, parallel: int = 1) -> dict:
+    """Run `items` until done or the budget is spent. Saved as an eval run.
+    `parallel` runs that many questions at once (each in its own home); the
+    budget is then checked between batches, so it can be passed by up to one batch."""
     run_id = "bench-" + uuid.uuid4().hex[:8]
     started, results, spent, stopped = now_iso(), [], 0.0, False
     by_id = {i.id: i for i in items}
-    for item in items:
-        if budget_usd and spent >= budget_usd:
-            stopped = True
-            break
+
+    def one(item: Item) -> dict:
         case = {"id": item.id, **bench.case(item)}
         result = run_case(case, factory, tracer, run_id,
                           grade=lambda c, turn: bench.grade(by_id[c["id"]], turn))
         result["meta"] = item.meta
-        results.append(result)
-        spent += result["cost_usd"]
-        if progress:
-            progress(result)
+        return result
+
+    batch = max(1, parallel)
+    with ThreadPoolExecutor(max_workers=batch) as pool:
+        for start in range(0, len(items), batch):
+            if budget_usd and spent >= budget_usd:
+                stopped = True
+                break
+            for result in pool.map(one, items[start:start + batch]):
+                results.append(result)
+                spent += result["cost_usd"]
+                if progress:
+                    progress(result)
     correct = sum(r["passed"] for r in results)
     low, high = wilson(correct, len(results))
     groups: dict[str, list[bool]] = defaultdict(list)

@@ -57,10 +57,12 @@ def _transcript(rows) -> str:
 
 
 def consolidate(store: MemoryStore, client, model: str, session_id: str,
-                notify=None, every: int = EVERY, force: bool = False) -> dict | None:
+                notify=None, every: int = EVERY, force: bool = False, at: str | None = None) -> dict | None:
     """Consolidate this session if enough unprocessed exchanges have built up
     (or always, with force=True). Returns what was saved, or None if nothing ran
-    or the call failed. Never raises: memory upkeep must not break a turn."""
+    or the call failed. Never raises: memory upkeep must not break a turn.
+    `at` dates the new facts and episode (when the conversation happened, if
+    not now: importing old chats)."""
     rows = store.unconsolidated(session_id)
     if not rows or (not force and len(rows) < every * 2):
         return None
@@ -76,10 +78,10 @@ def consolidate(store: MemoryStore, client, model: str, session_id: str,
             notify("memory", name="consolidation failed", error=str(exc), pending=len(rows))
         return None
 
-    added = [f.strip() for f in answer["facts"] if f.strip() and store.add_fact(f.strip(), "consolidation")]
+    added = [f.strip() for f in answer["facts"] if f.strip() and store.add_fact(f.strip(), "consolidation", at)]
     episode = answer["episode"].strip()
     if episode:
-        store.add_episode(episode, session_id)
+        store.add_episode(episode, session_id, at)
     store.mark_consolidated(session_id, rows[-1]["id"])
     result = {"messages": len(rows), "facts": added, "episode": episode}
     if notify:

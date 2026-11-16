@@ -348,12 +348,18 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
                     raise ValueError(f"setup file {name!r} is outside the workspace")
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content, encoding="utf-8")
+            if callable(case.get("prepare")):
+                # e.g. a benchmark feeding months of chat history through memory first;
+                # it returns what it spent, which counts toward the case (and budgets).
+                spent += case["prepare"](agent, tracer, run_id) or 0.0
             session = None
             turn: dict = {}
             for n, message in enumerate(case.get("messages") or [case["message"]]):
                 extra = {"long": True} if case.get("long") else {}   # long task: more steps, a cap
                 if n == 0 and case.get("attachments"):               # files go with the first message
                     extra["attachments"] = [Path(a) for a in case["attachments"]]
+                if case.get("now"):                                   # the turn happens as of this date
+                    extra["now"] = case["now"]
                 turn = agent.respond(message, session_id=session, source="eval", eval_run=run_id, **extra)
                 session = turn.get("session_id")
                 spent += turn.get("cost_usd") or 0

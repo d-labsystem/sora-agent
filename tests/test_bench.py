@@ -130,3 +130,95 @@ def test_calibration_report():
     assert "said 70-100%: 1/2 right (said 90% on average)" in text
     assert "said 0-30%: 0/1 right" in text and "calibration error 30%" in text    # 2/3 x 40% + 1/3 x 10%
     assert calibrate([{"passed": True, "judge": {}}]) == ""
+
+
+# ---- LongMemEval and dated memory
+
+def test_facts_and_episodes_can_be_dated(tmp_path):
+    from memory.store import MemoryStore
+    s = MemoryStore(tmp_path / "m.db")
+    s.add_fact("Aryan adopted a cat named Miso", "consolidation", "2023-05-20 02:21:00")
+    sid = s.ensure_session(None, "x")
+    s.add_episode("Talked about the new cat", sid, "2023-05-20 02:21:00")
+    assert s.list_facts()[0]["created_at"] == "2023-05-20 02:21:00"
+    assert s.search_episodes("cat") == ["(2023-05-20) Talked about the new cat"]
+
+
+def test_a_turn_can_run_as_of_another_date(tmp_path):
+    from datetime import datetime
+    gate = {"retrieve": False, "query": "", "correction": False, "complex": False, "reason": "q"}
+    client = FakeClient([message(text("ok"))], small=gate)
+    agent = Sora(Settings(home=tmp_path, memory_mirror=False), client, connect_mcp=False)
+    agent.respond("what day is it?", now=datetime(2023, 5, 30, 23, 40))
+    assert "Current local time: Tuesday 30 May 2023, 23:40" in client.requests[0]["system"][1]["text"]
+
+
+def test_longmemeval_parsing_and_exchanges():
+    from ops.bench.longmemeval import exchanges, kind_of, parse_date
+    assert parse_date("2023/05/30 (Tue) 23:40").isoformat() == "2023-05-30T23:40:00"
+    session = [{"role": "user", "content": "hi"}, {"role": "user", "content": "also this"},
+               {"role": "assistant", "content": "hello"}, {"role": "user", "content": "bye"}]
+    assert exchanges(session) == [("hi\n\nalso this", "hello"), ("bye", "")]
+    assert kind_of({"question_id": "q1_abs", "question_type": "multi-session"}) == "abstention"
+    assert kind_of({"question_id": "q2", "question_type": "temporal-reasoning"}) == "temporal-reasoning"
+
+
+def lme_row():
+    return {"question_id": "q1", "question_type": "temporal-reasoning", "question": "When did I get the cat?",
+            "answer": "20 May 2023", "question_date": "2023/05/30 (Tue) 23:40",
+            "haystack_dates": ["2023/05/25 (Thu) 10:00", "2023/05/20 (Sat) 02:21"],
+            "haystack_sessions": [[{"role": "user", "content": "Miso loves boxes"}, {"role": "assistant", "content": "Cute!"}],
+                                  [{"role": "user", "content": "I adopted a cat, Miso"}, {"role": "assistant", "content": "Congrats"}]]}
+
+
+def test_history_goes_through_soras_memory_with_session_dates(tmp_path):
+    from ops.bench.longmemeval import ingest
+    small = iter([{"facts": ["The user adopted a cat named Miso"], "episode": "User adopted a cat"},
+                  {"facts": ["Miso loves boxes"], "episode": "Chatted about Miso and boxes"}])
+    client = FakeClient([], small=lambda req: next(small))
+    agent = Sora(Settings(home=tmp_path, memory_mirror=False), client, connect_mcp=False)
+    counts = ingest(agent, lme_row())
+    assert counts == {"sessions": 2, "exchanges": 2, "consolidations": 2}
+    facts = {f["content"]: f["created_at"] for f in agent.store.list_facts()}
+    assert facts == {"The user adopted a cat named Miso": "2023-05-20 02:21:00",      # oldest session first
+                     "Miso loves boxes": "2023-05-25 10:00:00"}
+    assert len(agent.store.list_sessions()) == 2
+
+
+def test_longmemeval_cases_grading_and_counted_ingestion(tmp_path):
+    from ops.bench.longmemeval import LongMemEval, RULES
+    from ops.evals import run_case
+    grader = FakeClient(small=lambda req: {"correct": "off-by-one" in req["messages"][0]["content"], "reason": "ok"})
+    bench = LongMemEval(grader, "haiku")
+    bench.rows = {"q1": lme_row()}
+    item = runner.Item("q1", "When did I get the cat?", "20 May 2023", {"type": "temporal-reasoning"})
+    case = bench.case(item)
+    assert case["now"].year == 2023 and callable(case["prepare"])
+    bench.closed_book = True
+    assert "prepare" not in bench.case(item)
+    graded = bench.grade(item, {"reply": "On 20 May 2023."})
+    assert graded["checks"] == {"correct": True}                     # the temporal rule was used
+    assert "Rubric:" in GRADE_for(bench, "single-session-preference") and RULES["abstention"].startswith("I will give you an unanswerable")
+
+    gate = {"retrieve": True, "query": "cat", "correction": False, "complex": False, "reason": "q"}
+    def small(req):
+        content = req["messages"][0]["content"]
+        return gate if "search its long-term memory" in content else {"facts": ["x"], "episode": "y"}
+    tracer = Tracer(tmp_path / "traces.db")
+    factory = lambda home, tr: Sora(Settings(home=home, memory_mirror=False, workspace=False),
+                                    FakeClient([message(text("20 May 2023"))], small=small), tracer=tr, connect_mcp=False)
+    bench.closed_book = False
+    result = run_case({"id": "q1", **bench.case(item)}, factory, tracer, "run-x",
+                      grade=lambda c, turn: bench.grade(item, turn))
+    turns = tracer.turns(limit=10)
+    assert any(t["message"].startswith("(memory: ingest 2 past sessions)") for t in turns)
+    assert result["cost_usd"] > sum(t["cost_usd"] for t in turns if not t["message"].startswith("(memory"))
+
+
+def GRADE_for(bench, kind):
+    item = runner.Item("q", "Q?", "A", {"type": kind})
+    captured = {}
+    bench.grader = FakeClient(small=lambda req: captured.setdefault("p", req["messages"][0]["content"]) and
+                              {"correct": True, "reason": "r"})
+    bench.grade(item, {"reply": "r"})
+    return captured["p"]

@@ -8,7 +8,8 @@ from __future__ import annotations
 import sys
 
 BENCHMARKS = {"frames": "ops.bench.frames:Frames", "gaia": "ops.bench.gaia:Gaia",
-              "browsecomp": "ops.bench.browsecomp:BrowseComp"}
+              "browsecomp": "ops.bench.browsecomp:BrowseComp",
+              "longmemeval": "ops.bench.longmemeval:LongMemEval"}
 
 
 def benchmark_class(name: str):
@@ -36,6 +37,7 @@ def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=s
                  **(CLOSED_BOOK if closed_book else {"bare": True} if bare else {})}
     tracer, grader, model, grader_model, factory = eval_setup(**overrides)
     bench = build(name, grader, grader_model)
+    bench.closed_book = closed_book                       # a benchmark may change its cases for it
     folder = load_settings().home / "benchmarks" / name
     items = bench.load(folder)
     if ids:                       # rerun chosen questions (e.g. ones that crashed), in the given order
@@ -60,6 +62,7 @@ def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=s
         out.write(f"{mark}  {r['id']}  ${r['cost_usd']:.3f}  {str(said)[:70]}\n")
         out.flush()
 
-    summary = runner.run(bench, items, factory, tracer, budget, label, model, progress)
+    summary = runner.run(bench, items, factory, tracer, budget, label, model, progress,
+                         parallel=getattr(bench, "parallel", 1))
     out.write("\n" + runner.report(summary) + "\n")
     return 0

@@ -174,8 +174,8 @@ class MemoryStore:
     def closest_fact(self, content: str):
         return self.semantic.closest_fact(content)
 
-    def add_fact(self, content: str, source: str = "tool") -> bool:
-        return self.semantic.add_fact(content, source)
+    def add_fact(self, content: str, source: str = "tool", created_at: str | None = None) -> bool:
+        return self.semantic.add_fact(content, source, created_at)
 
     def search_facts(self, query: str, top_k: int = 5) -> list[str]:
         return self.semantic.search_facts(query, top_k)
@@ -189,8 +189,8 @@ class MemoryStore:
     def delete_fact(self, fact_id) -> None:
         self.semantic.delete_fact(fact_id)
 
-    def add_episode(self, summary: str, session_id: str) -> None:
-        self.semantic.add_episode(summary, session_id)
+    def add_episode(self, summary: str, session_id: str, created_at: str | None = None) -> None:
+        self.semantic.add_episode(summary, session_id, created_at)
 
     def search_episodes(self, query: str, top_k: int = 3) -> list[str]:
         return self.semantic.search_episodes(query, top_k)

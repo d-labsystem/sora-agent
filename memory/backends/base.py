@@ -175,16 +175,17 @@ class MemoryBackend(ABC):
         best = int(similarity.argmax())
         return float(similarity[best]), rows[best][0]
 
-    def add_fact(self, content: str, source: str = "tool") -> bool:
+    def add_fact(self, content: str, source: str = "tool", created_at: str | None = None) -> bool:
         """Store a fact. False when the same fact is already stored: the same
-        text, or (with an embedder) a rewording of it (similarity >= DUPLICATE)."""
+        text, or (with an embedder) a rewording of it (similarity >= DUPLICATE).
+        `created_at` ('YYYY-MM-DD HH:MM:SS') dates it, e.g. when importing old chats; default now."""
         content = tidy(content)
         if not content or self._has_fact(content):
             return False
         closest = self.closest_fact(content)
         if closest and closest[0] >= DUPLICATE:
             return False
-        self._insert_fact(content, source)
+        self._insert_fact(content, source, created_at)
         self._changed()
         return True
 
@@ -207,10 +208,10 @@ class MemoryBackend(ABC):
         self._delete_fact(fact_id)
         self._changed()
 
-    def add_episode(self, summary: str, session_id: str) -> None:
+    def add_episode(self, summary: str, session_id: str, created_at: str | None = None) -> None:
         summary = tidy(summary)
         if summary:
-            self._insert_episode(summary, session_id)
+            self._insert_episode(summary, session_id, created_at)
             self._changed()
 
     def search_episodes(self, query: str, top_k: int = 3) -> list[str]:

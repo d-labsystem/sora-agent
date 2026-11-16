@@ -483,11 +483,13 @@ class Sora:
 
     def respond(self, message: str, session_id: str | None = None, source: str = "chat",
                 eval_run: str | None = None, listener=None, long: bool = False,
-                attachments: list | None = None) -> dict:
+                attachments: list | None = None, now: datetime | None = None) -> dict:
         """Run one turn and return the finished trace (reply, status, spans...).
         `long` runs it as a long task: more steps, a dollar cap. `attachments`
         are file paths: images and PDFs go to the model, the rest into the
-        workspace (harness/attachments.py)."""
+        workspace (harness/attachments.py). `now` runs the turn as of another
+        date (the prompt's current time): replaying or evaluating old history."""
+        clock = now or datetime.now().astimezone()
         s = self.settings
         prepared = prepare_attachments(attachments, s.home / "workspace") if attachments else None
         if prepared:
@@ -509,7 +511,7 @@ class Sora:
                     bare = "\n\n".join([BARE_SYSTEM, *self.limits])
                     system = [{"type": "text", "text": bare, "cache_control": {"type": "ephemeral"}},
                               {"type": "text", "text": f"Current local time: "
-                                                       f"{datetime.now().astimezone().strftime('%A %d %B %Y, %H:%M %Z')}"}]
+                                                       f"{clock.strftime('%A %d %B %Y, %H:%M %Z').strip()}"}]
                 else:
                     found = recall(self.store, self.small, self.small_id, session_id, message, notify)
                     lessons = self.lessons.relevant(message)
@@ -518,7 +520,7 @@ class Sora:
                     tool_notes = self.lessons.tool_notes(tool_names)
                     planning = (long and s.planner in ("long", "always")) or (found.complex and s.planner == "always")
                     system = build_system(self.soul_path.read_text(encoding="utf-8"),
-                                          datetime.now().astimezone(), self.skills.catalog(),
+                                          clock, self.skills.catalog(),
                                           matched, lessons, found, self.limits, channel=source,
                                           tool_notes=tool_notes, planning=planning)
                 self.plan.reset(notify)
