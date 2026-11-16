@@ -160,6 +160,11 @@ async function send() {
         step("tool", `${ev.name} ${ev.ok ? "✓" : "✗"} ${ms(ev.ms)}`, ev.ok ? "" : "bad");
         chips.append(el("span", { class: "chip" + (ev.ok ? "" : " bad") }, `${ev.ok ? "🔧" : "⚠"} ${ev.name}`));
         if (ev.ok && ev.name.startsWith("show_")) { visuals.append(render.visual({ tool: ev.name, ...ev.args })); box.scrollTop = box.scrollHeight; }
+        if (ev.ok && ev.name === "run_code") {     // charts the sandbox saved in the workspace
+          const saved = /images saved in the workspace \(shown to the user\): (.+)/.exec(ev.output || "");
+          for (const name of saved ? saved[1].split(", ") : [])
+            visuals.append(el("img", { class: "sandbox-image", src: `/api/workspace/${name.split("/").map(encodeURIComponent).join("/")}`, alt: name }));
+        }
         break;
       case "server_tool": {
         const q = ev.input?.query || ev.input?.url || "";

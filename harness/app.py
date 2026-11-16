@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -53,6 +54,7 @@ from ops.tracing import Tracer
 from tools import calendar_server, gcal_server, google_auth, notes_server, workspace_server
 from tools.approvals import Approvals
 from tools.planner import PLAN_NOTE, Plan
+from tools.sandbox import Sandbox
 from harness.attachments import prepare as prepare_attachments
 from tools.builtin import TurnContext, register_builtins
 from tools.visuals import VISUAL_TOOLS, visual_tools
@@ -110,6 +112,7 @@ class Settings:
     # Plan + completion check: "long" = long tasks only (default), "always" = any request the
     # gate calls complex too, "off". On short tasks it cost +54% for no gain (complex-tasks eval).
     planner: str = "long"
+    sandbox: str = "auto"                   # run_code in Docker (tools/sandbox.py): auto | on | off
     # The bare-model baseline for benchmarks: the same model, web and workspace tools and
     # attachments, but none of sora's harness (no memory, gate, skills, lessons, planner,
     # persona). sora's score minus this one is what the harness adds.
@@ -181,6 +184,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         notes=_flag("SORA_NOTES", d.notes),
         calendar=_flag("SORA_CALENDAR", d.calendar),
+        sandbox=os.getenv("SORA_SANDBOX", d.sandbox).strip().lower(),
         planner={"1": "always", "true": "always", "0": "off", "false": "off"}.get(
             os.getenv("SORA_PLANNER", d.planner).strip().lower(),
             os.getenv("SORA_PLANNER", d.planner).strip().lower()),
@@ -395,6 +399,11 @@ class Sora:
             self.registry.register(self.plan.tool())
         for tool in ([] if settings.bare else visual_tools()):
             self.registry.register(tool)
+        # Code runs on this Mac in a locked-down container. "auto": offered when Docker is
+        # installed; if it isn't running when called, the tool says so.
+        self.sandbox = Sandbox(home / "workspace")
+        if not settings.bare and (settings.sandbox == "on" or (settings.sandbox == "auto" and shutil.which("docker"))):
+            self.registry.register(self.sandbox.tool())
         self.mcp: MCPManager | None = None
         if connect_mcp:
             self._start_mcp()
@@ -588,6 +597,8 @@ class Sora:
                                   else "words only"),
                 "memory": {"backend": self.store.semantic.name, "consolidator": s.consolidator,
                            "mirror": str(s.home / "MEMORY.md") if s.memory_mirror else None},
+                "sandbox": {"setting": s.sandbox, "offered": self.registry.get("run_code") is not None,
+                            "problem": self.sandbox.available() if self.registry.get("run_code") else None},
                 "otel": [{"name": t.name, "endpoint": t.endpoint, "content": t.content,
                           **self.otel.delivery().get(t.name, {})}
                          for t in (self.otel.targets if self.otel else [])],

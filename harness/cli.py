@@ -208,6 +208,9 @@ def format_status(status: dict) -> str:
             + (", ".join(t["name"] for t in status["tools"] if t["source"] == prov.get("main")) or "none"),
             *[f"limit {line}" for line in prov.get("limits", [])],
             f"home  {status['home']}"]
+    if status.get("sandbox", {}).get("offered"):
+        problem = status["sandbox"].get("problem")
+        rows.append("code  run_code in Docker" + (f" (not usable: {problem})" if problem else ""))
     if status.get("otel"):
         rows.append("otel  " + ", ".join(f"{t['name']} {t['endpoint']}"
                                          + ("" if t["content"] else " (no text)") for t in status["otel"]))
@@ -388,6 +391,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
                     help="send turns to the configured Phoenix/Langfuse instead of writing JSONL")
     ex.add_argument("--since", help="only turns started on or after this date (YYYY-MM-DD)")
     sub.add_parser("status", help="model, tools, MCP servers and skills")
+    sbx = sub.add_parser("sandbox", help="build the code sandbox image, or check it works")
+    sbx.add_argument("action", choices=["build", "check"])
     cal = sub.add_parser("calendar", help="allow sora to use the Mac's Calendar, and list what it sees")
     cal.add_argument("action", choices=["check"])
     goo = sub.add_parser("google", help="sign in to Google Calendar, or out")
@@ -439,6 +444,16 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "memory":     # works on the stores directly; no agent, no model calls
         return memory_command(args, out)
+
+    if command == "sandbox":
+        from tools import sandbox
+        if args.action == "build":
+            return sandbox.build_image(lambda line: out.write(line + "\n"))
+        from harness.app import load_settings
+        box = sandbox.Sandbox(load_settings(args.home).home / "workspace")
+        problem = box.available()
+        out.write((f"sandbox: {problem}" if problem else box.run_code("import sys; print('ok', sys.version.split()[0])")) + "\n")
+        return 1 if problem else 0
 
     if command == "calendar":   # run it in Terminal: macOS asks the app that runs it
         from tools import calendar_server

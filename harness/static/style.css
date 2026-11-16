@@ -243,3 +243,5 @@ img.drawing { max-width: 100%; max-height: 420px; display: block; background: #f
 .msg .plan li.in_progress { color: var(--ink); font-weight: 500; }
 .msg .plan li.done { color: var(--ok); }
 .msg .plan li.blocked { color: var(--warn); }
+
+.sandbox-image { max-width: 100%; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: #fff; }

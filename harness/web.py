@@ -145,6 +145,18 @@ def make_handler(dash: Dashboard):
 
         # ---- plumbing
 
+        def _workspace_image(self, relative: str) -> None:
+            """Charts that run_code saved. Images only, and only from the workspace:
+            the path is resolved and must stay inside it."""
+            root = (agent.settings.home / "workspace").resolve()
+            target = (root / relative).resolve()
+            kinds = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+                     ".webp": "image/webp", ".svg": "image/svg+xml"}
+            if root not in target.parents or target.suffix.lower() not in kinds or not target.is_file():
+                return self._error(404, "not found")
+            headers = {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"}   # an SVG can't run script
+            return self._send(200, target.read_bytes(), kinds[target.suffix.lower()], headers)
+
         def _send(self, status: int, body: bytes, content_type: str, extra: dict | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -207,6 +219,8 @@ def make_handler(dash: Dashboard):
                 self._error(500, f"{type(exc).__name__}: {exc}")
 
         def _get(self, parts: list[str], q: dict) -> None:
+            if parts[:2] == ["api", "workspace"] and len(parts) > 2:
+                return self._workspace_image("/".join(parts[2:]))
             if not parts:
                 return self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8")
             if parts[0] == "static" and len(parts) == 2:
