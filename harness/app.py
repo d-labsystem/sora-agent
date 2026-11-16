@@ -416,7 +416,7 @@ class Sora:
             log.error("ignoring mcp.json: %s", exc)
             config = {}
         if self.settings.workspace and "workspace" not in config:
-            config["workspace"] = workspace_server.config(home)
+            config["workspace"] = workspace_server.config(home, basic=os.getenv("SORA_WORKSPACE_TOOLS") == "basic")
         if self.settings.notes and "notes" not in config:
             config["notes"] = notes_server.config()
         if self.settings.calendar and "calendar" not in config:

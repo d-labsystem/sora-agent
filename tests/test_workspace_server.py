@@ -187,3 +187,23 @@ def test_find_files_newest_first(ws):
 def test_new_tools_cannot_escape_or_forge_history(ws, call):
     with pytest.raises(ToolError):
         call(ws)
+
+
+
+def test_basic_mode_offers_only_the_original_tools(tmp_path):
+    manager = MCPManager({"workspace": config(tmp_path, basic=True)}, tmp_path / "logs")
+    manager.start(timeout=20)
+    try:
+        assert sorted(manager.register(ToolRegistry())) == [
+            "workspace__grep", "workspace__list_files", "workspace__read_file", "workspace__write_file"]
+    finally:
+        manager.close()
+
+
+def test_files_equal_check():
+    from ops.evals import case_checks
+    import tempfile, pathlib
+    folder = pathlib.Path(tempfile.mkdtemp())
+    (folder / "a.md").write_text("one\ntwo\n")
+    checks = case_checks({"files_equal": {"a.md": "one\ntwo", "b.md": "x"}}, {"reply": ""}, [], folder)
+    assert checks == {"a.md exactly as expected": True, "b.md exactly as expected": False}

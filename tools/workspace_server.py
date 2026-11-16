@@ -265,7 +265,12 @@ class Workspace:
                f"({len(versions) - 1} older version(s) left)."
 
 
-def build(root: Path) -> MCPServer:
+BASIC = {"list_files", "read_file", "write_file", "grep"}   # the tool set before precise editing
+
+
+def build(root: Path, basic: bool = False) -> MCPServer:
+    """`basic` offers only the original tools (no edit, find or undo), for
+    comparing old and new in evals (SORA_WORKSPACE_TOOLS=basic)."""
     ws = Workspace(root)
     server = MCPServer("workspace", instructions=f"Files in the user's workspace folder {ws.root}.")
 
@@ -309,15 +314,19 @@ def build(root: Path) -> MCPServer:
         """Restore a file to how it was before its last edit or overwrite (repeatable, 10 deep)."""
         return ws.undo_change(path)
 
+    if basic:
+        for name in ("edit_file", "find_files", "undo_change"):
+            server.remove_tool(name)
     return server
 
 
-def config(home: Path) -> dict:
+def config(home: Path, basic: bool = False) -> dict:
     """The mcp.json entry for this server, used when the user hasn't configured one."""
-    return {"command": sys.executable, "args": [str(Path(__file__).resolve()), str(home / "workspace")]}
+    return {"command": sys.executable,
+            "args": [str(Path(__file__).resolve()), str(home / "workspace"), *(["--basic"] if basic else [])]}
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: workspace_server.py WORKSPACE_FOLDER")
-    build(Path(sys.argv[1])).run()
+    if len(sys.argv) not in (2, 3):
+        sys.exit("usage: workspace_server.py WORKSPACE_FOLDER [--basic]")
+    build(Path(sys.argv[1]), basic=sys.argv[2:] == ["--basic"]).run()

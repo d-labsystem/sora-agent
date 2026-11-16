@@ -53,6 +53,7 @@ from tools.visuals import VISUAL_TOOLS
 
 EXPECT_KEYS = {
     "files":              "object: {workspace file: [texts it must contain]} after the case",
+    "files_equal":        "object: {workspace file: exact expected content} (nothing else may change)",
     "plan_closed":        "bool: the last plan had no open steps (all done or blocked)",
     "tools":              "list: each of these tools was called",
     "no_tools":           "list: none of these tools was called",
@@ -146,6 +147,10 @@ def case_checks(expect: dict, turn: dict, facts: list[str], workspace: Path | No
         out[f"wrote {name}"] = content is not None
         for text in texts:
             out[f"{name} has {text!r}"] = content is not None and text.lower() in content
+    for name, want in (expect.get("files_equal") or {}).items():
+        path = (workspace / name) if workspace else None
+        got = path.read_text(encoding="utf-8", errors="replace") if path and path.is_file() else None
+        out[f"{name} exactly as expected"] = got is not None and got.rstrip("\n") == want.rstrip("\n")
     if "plan_closed" in expect:
         plans = [s["data"] for s in turn.get("spans", []) if s["kind"] == "plan" and s.get("name") == "plan"]
         closed = bool(plans) and not any(st["status"] in ("pending", "in_progress") for st in plans[-1]["steps"])
