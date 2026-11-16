@@ -43,6 +43,12 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+
+# What each tool does, for permission rules (tools/permissions.py): reading only,
+# or changing things here that can be undone and notify no one.
+READ = ToolAnnotations(read_only_hint=True)
+LOCAL = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 
 MAX_READ = 100_000       # characters returned by one read
 MAX_LINES = 2_000        # lines returned by one read
@@ -274,42 +280,42 @@ def build(root: Path, basic: bool = False) -> MCPServer:
     ws = Workspace(root)
     server = MCPServer("workspace", instructions=f"Files in the user's workspace folder {ws.root}.")
 
-    @server.tool()
+    @server.tool(annotations=READ)
     def list_files(path: str = ".") -> str:
         """List files and folders in the workspace (recursively), with sizes."""
         return ws.list_files(path)
 
-    @server.tool()
+    @server.tool(annotations=READ)
     def find_files(pattern: str = "**/*") -> str:
         """Find files by name pattern, newest first: '*.csv', 'notes/**/*.md', 'budget*'."""
         return ws.find_files(pattern)
 
-    @server.tool()
+    @server.tool(annotations=READ)
     def read_file(path: str, start_line: int = 1, lines: int = 0) -> str:
         """Read a text file, with line numbers ('12<TAB>text'). For long files give start_line and
         lines. The numbers are not part of the file: leave them out when quoting text to edit."""
         return ws.read_file(path, start_line, lines)
 
-    @server.tool()
+    @server.tool(annotations=LOCAL)
     def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> str:
         """Change part of a file: replace the exact text `old` with `new`. Read the file first.
         `old` must appear exactly once (add surrounding text to make it unique) unless replace_all.
         Prefer this to rewriting a whole file: it's cheaper and can't disturb other lines."""
         return ws.edit_file(path, old, new, replace_all)
 
-    @server.tool()
+    @server.tool(annotations=LOCAL)
     def write_file(path: str, content: str, append: bool = False) -> str:
         """Create a file, or replace an existing one entirely (read it first). append=true adds to
         the end instead, e.g. for a running log. To change part of a file, use edit_file."""
         return ws.write_file(path, content, append)
 
-    @server.tool()
+    @server.tool(annotations=READ)
     def grep(pattern: str, glob: str = "", ignore_case: bool = False, context: int = 0) -> str:
         """Search file contents with a regular expression. Optional glob limits which files
         ('*.md'), context adds lines around each match (up to 5). Results: file:line: text."""
         return ws.grep(pattern, glob, ignore_case, context)
 
-    @server.tool()
+    @server.tool(annotations=LOCAL)
     def undo_change(path: str) -> str:
         """Restore a file to how it was before its last edit or overwrite (repeatable, 10 deep)."""
         return ws.undo_change(path)

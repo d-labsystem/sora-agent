@@ -69,6 +69,8 @@ def test_through_mcp(tmp_path):
         assert sorted(manager.register(registry)) == [
             "workspace__edit_file", "workspace__find_files", "workspace__grep", "workspace__list_files",
             "workspace__read_file", "workspace__undo_change", "workspace__write_file"]
+        assert registry.get("workspace__read_file").kind == "read"          # annotations survive MCP
+        assert registry.get("workspace__edit_file").kind == "local"
         assert not registry.execute("workspace__write_file", {"path": "a.md", "content": "hello"})[1]
         assert registry.execute("workspace__read_file", {"path": "a.md"}) == ("1\thello", False)
         assert not registry.execute("workspace__edit_file", {"path": "a.md", "old": "hello", "new": "hi"})[1]

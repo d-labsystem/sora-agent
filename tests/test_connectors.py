@@ -195,7 +195,7 @@ def guarded():
     calls = []
     registry = ToolRegistry()
     registry.register(Tool("gcal__create_event", "", {"type": "object", "properties": {}},
-                           lambda **a: calls.append(a) or "created"))
+                           lambda **a: calls.append(a) or "created", kind="local"))   # as its server annotates it
     context = TurnContext("s1", "t1")
     clock = [1000.0]
     approvals = Approvals(context, clock=lambda: clock[0])

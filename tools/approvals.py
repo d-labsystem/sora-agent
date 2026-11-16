@@ -1,4 +1,10 @@
-"""Approvals: actions that reach other people wait for the user's reply.
+"""Approvals: the gate every tool call passes through.
+
+Which calls are held, refused or run is decided by permission rules
+(tools/permissions.py, <home>/permissions.json). This module carries the
+decision out; what follows is how "ask" works.
+
+Actions that reach other people wait for the user's reply.
 
 Some tool calls can't be undone and act in the user's name: a calendar
 invite emails every attendee. The model decides to call tools, so the model
@@ -26,11 +32,13 @@ guarantee is that a human was asked and answered first.
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from tools.permissions import CONTROL, Permissions
 from tools.registry import Tool, ToolError, ToolRegistry
 
 TTL = 600               # seconds a draft stays approvable
@@ -56,38 +64,58 @@ def invite_rule(args: dict) -> str | None:
             f"invitations to {', '.join(people)}")
 
 
-RULES: dict[str, Callable[[dict], str | None]] = {
-    "gcal__create_event": invite_rule,        # Google Calendar; the Mac's Calendar can't invite
+# How a held call is described to the user, per tool (a generic line otherwise).
+SUMMARIES: dict[str, Callable[[dict], str | None]] = {
+    "gcal__create_event": invite_rule,
 }
 
 
+def summary(tool: str, args: dict) -> str:
+    special = SUMMARIES.get(tool)
+    text = special(args) if special else None
+    return text or f"Run {tool} with {json.dumps(args, ensure_ascii=False)[:400]}"
+
+
 class Approvals:
-    def __init__(self, context, rules: dict | None = None, ttl: float = TTL, clock=time.time):
-        self.context, self.rules, self.ttl, self.clock = context, rules or RULES, ttl, clock
+    def __init__(self, context, permissions: Permissions | None = None, ttl: float = TTL, clock=time.time):
+        self.context, self.ttl, self.clock = context, ttl, clock
+        self.permissions = permissions or Permissions(None)
         self.drafts: dict[str, Draft] = {}
         self.originals: dict[str, Callable[..., str]] = {}
+        self.notify = None                 # the turn's notify, set by the harness: decisions are traced
 
     def guard(self, registry: ToolRegistry) -> list[str]:
-        """Wrap every registered tool that has a rule. Returns their names."""
+        """Route every tool (except the gate's own) through the rules. Safe to
+        call again after more tools are registered. Returns the names wrapped."""
         guarded = []
-        for name, rule in self.rules.items():
+        for described in registry.describe():
+            name = described["name"]
             tool = registry.get(name)
-            if tool is None or name in self.originals:
+            if tool is None or name in CONTROL or name in self.originals:
                 continue
+            if tool.kind:
+                self.permissions.kinds[name] = tool.kind      # MCP tools say what they are
             self.originals[name] = tool.function
-            tool.function = self._held(name, rule)
+            tool.function = self._gated(name)
             guarded.append(name)
         return guarded
 
-    def _held(self, name: str, rule):
+    def _gated(self, name: str):
         def call(**args) -> str:
-            summary = rule(args)
-            if summary is None:
+            decision = self.permissions.decide(name, args)
+            if self.notify and decision.action != "allow":
+                self.notify("permission", name=f"{decision.action}: {name}", tool=name, action=decision.action,
+                            rule=decision.rule, why=decision.why, ok=decision.action != "deny")
+            if decision.action == "allow":
                 return self.originals[name](**args)
-            draft = Draft(f"d{secrets.token_hex(3)}", name, dict(args), summary,
+            if decision.action == "deny":
+                raise ToolError(f"Not allowed by the user's permission rules ({decision.describe()}). "
+                                "Don't try another way around it; tell the user what you couldn't do and why.")
+            draft = Draft(f"d{secrets.token_hex(3)}", name, dict(args), summary(name, args),
                           self.context.session_id, self.context.turn_id, self.clock())
             self.drafts[draft.id] = draft
-            return (f"NOT DONE YET: this needs the user's approval first.\nDraft {draft.id}: {summary}.\n"
+            return (f"NOT DONE YET: this needs the user's approval first ({decision.describe()}).\n"
+                    f"Draft {draft.id}: {draft.summary}.\n"
                     f"Show the user exactly this and ask whether to go ahead. Only if they clearly say yes "
                     f"in their reply, call approve(draft_id='{draft.id}'). It expires in {int(self.ttl // 60)} minutes.")
         return call

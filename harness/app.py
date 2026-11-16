@@ -53,6 +53,7 @@ from ops import otel
 from ops.tracing import Tracer
 from tools import calendar_server, gcal_server, google_auth, notes_server, workspace_server
 from tools.approvals import Approvals
+from tools.permissions import Permissions
 from tools.planner import PLAN_NOTE, Plan
 from tools.sandbox import Sandbox
 from harness.attachments import prepare as prepare_attachments
@@ -389,7 +390,8 @@ class Sora:
         if not settings.bare:     # the baseline gets only web and workspace tools
             register_builtins(self.registry, self.store, self.skills, self.context)
         # Actions that reach other people wait for the user's reply (tools/approvals.py).
-        self.approvals = Approvals(self.context)
+        self.permissions = Permissions(home / "permissions.json")
+        self.approvals = Approvals(self.context, self.permissions)
         for tool in ([] if settings.bare else self.approvals.tools()):
             self.registry.register(tool)
         # The checklist tool is always registered (a changing tool list would break the
@@ -407,6 +409,7 @@ class Sora:
         self.mcp: MCPManager | None = None
         if connect_mcp:
             self._start_mcp()
+        self.approvals.guard(self.registry)            # every tool, MCP ones included, through the rules
 
     def _start_mcp(self) -> None:
         home = self.settings.home
@@ -427,7 +430,6 @@ class Sora:
             self.mcp = MCPManager(config, home / "logs")
             self.mcp.start()
             self.mcp.register(self.registry)
-            self.approvals.guard(self.registry)        # after the tools it guards exist
 
     def calendar_on(self) -> bool:
         choice = self.settings.google_calendar
@@ -484,6 +486,7 @@ class Sora:
                                           matched, lessons, found, self.limits, channel=source,
                                           tool_notes=tool_notes, planning=planning)
                 self.plan.reset(notify)
+                self.approvals.notify = notify
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
                        skills=[k.name for k in matched], tool_notes=sorted(tool_notes),
@@ -608,7 +611,10 @@ class Sora:
                 "mcp": self.mcp.status() if self.mcp else [],
                 "connectors": {"notes": s.notes, "calendar": s.calendar, "google_calendar": self.calendar_on(),
                                "google_signed_in": (s.home / google_auth.TOKEN_FILE).is_file(),
-                               "approval_needed_for": sorted(self.approvals.originals)},
+                               "approval_needed_for": sorted(t for t in self.approvals.originals
+                                                             if self.permissions.decide(t, {}).action == "ask")},
+                "permissions": {"file": str(s.home / "permissions.json"), "problem": self.permissions.problem,
+                                "rules": len(self.permissions.rules)},
                 "skills": [{"name": k.name, "description": k.description, "triggers": k.triggers,
                             "bundled": k.bundled, **k.extra} for k in self.skills.all().values()],
                 "skill_errors": self.skills.errors}

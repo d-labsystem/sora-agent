@@ -114,6 +114,18 @@ input.addEventListener("input", () => { input.style.height = "auto"; input.style
 input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
 
+// A held action (permission rules said "ask"). The buttons send your answer as a
+// message, so it still arrives in a later turn: the model can't approve its own draft.
+function showDraft(bot, output) {
+  const id = /Draft (d[0-9a-f]+): (.+?)\.?\n/.exec(output);
+  if (!id) return;
+  const box = el("div", { class: "draft" }, el("div", { class: "what" }, `Waiting for you: ${id[2]}`));
+  const answer = (text) => { box.querySelectorAll("button").forEach((b) => (b.disabled = true)); input.value = text; send(); };
+  box.append(el("button", { class: "primary", onclick: () => answer(`Yes, go ahead with draft ${id[1]}.`) }, "Approve"),
+             el("button", { onclick: () => answer(`No, discard draft ${id[1]}.`) }, "Discard"));
+  bot.querySelector(".body").after(box);
+}
+
 // The model's checklist on multi-step requests, updated in place as steps finish.
 const PLAN_MARK = { pending: "○", in_progress: "◐", done: "●", blocked: "✗" };
 function showPlan(bot, steps) {
@@ -160,6 +172,7 @@ async function send() {
         step("tool", `${ev.name} ${ev.ok ? "✓" : "✗"} ${ms(ev.ms)}`, ev.ok ? "" : "bad");
         chips.append(el("span", { class: "chip" + (ev.ok ? "" : " bad") }, `${ev.ok ? "🔧" : "⚠"} ${ev.name}`));
         if (ev.ok && ev.name.startsWith("show_")) { visuals.append(render.visual({ tool: ev.name, ...ev.args })); box.scrollTop = box.scrollHeight; }
+        if (ev.ok && (ev.output || "").startsWith("NOT DONE YET")) showDraft(bot, ev.output);
         if (ev.ok && ev.name === "run_code") {     // charts the sandbox saved in the workspace
           const saved = /images saved in the workspace \(shown to the user\): (.+)/.exec(ev.output || "");
           for (const name of saved ? saved[1].split(", ") : [])
@@ -178,6 +191,7 @@ async function send() {
         showPlan(bot, ev.steps);
         step("plan", `${ev.steps.filter((s) => s.status === "done").length}/${ev.steps.length} done`);
         break;
+      case "permission": step("permission", ev.name, ev.action === "deny" ? "bad" : "warn"); break;
       case "error": step("error", ev.error, "bad"); break;
       case "done":
         if (ev.status === "error") { bot.classList.add("error"); body.textContent = ev.error || "Something went wrong."; }

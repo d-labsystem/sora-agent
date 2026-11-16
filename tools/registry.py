@@ -60,6 +60,7 @@ class Tool:
     input_schema: dict[str, Any]
     function: Callable[..., str]
     source: str = "local"
+    kind: str = ""          # read | local | external | unknown (tools/permissions.py); "" = look it up
 
 
 def invalid_args(schema: dict[str, Any], args: Any) -> str | None:

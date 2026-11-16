@@ -230,6 +230,30 @@ def format_status(status: dict) -> str:
     return "\n".join(rows)
 
 
+def permissions_command(agent, args, out: IO[str]) -> int:
+    """Rules apply to the live tool list, MCP tools included, so this builds the agent."""
+    import json
+    perms = agent.permissions
+    out.write(f"rules: {agent.settings.home / 'permissions.json'} ({len(perms.rules)} rules)\n")
+    if perms.problem:
+        out.write(f"BROKEN: {perms.problem}. Failing closed: only reading runs without asking.\n")
+    tools = [t["name"] for t in agent.registry.describe() if t["source"] != agent.registry.server_source]
+    if args.action == "test":
+        if not args.tool:
+            out.write("usage: permissions test TOOL '{\"arg\": \"value\"}'\n")
+            return 1
+        try:
+            call = json.loads(args.args)
+        except ValueError as exc:
+            out.write(f"arguments must be JSON: {exc}\n")
+            return 1
+        out.write(f"{args.tool} ({perms.kind(args.tool)}): {perms.decide(args.tool, call).describe()}\n")
+        return 0
+    for tool, kind, what in perms.table(tools):
+        out.write(f"  {tool:34} {kind:9} {what}\n")
+    return 0
+
+
 def google_command(args, out: IO[str]) -> int:
     from harness.app import load_settings
     from tools import google_auth
@@ -391,6 +415,10 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
                     help="send turns to the configured Phoenix/Langfuse instead of writing JSONL")
     ex.add_argument("--since", help="only turns started on or after this date (YYYY-MM-DD)")
     sub.add_parser("status", help="model, tools, MCP servers and skills")
+    prm = sub.add_parser("permissions", help="what each tool may do on its own; test a call against the rules")
+    prm.add_argument("action", nargs="?", default="list", choices=["list", "test"])
+    prm.add_argument("tool", nargs="?")
+    prm.add_argument("args", nargs="?", default="{}", help="the call's arguments as JSON")
     sbx = sub.add_parser("sandbox", help="build the code sandbox image, or check it works")
     sbx.add_argument("action", choices=["build", "check"])
     cal = sub.add_parser("calendar", help="allow sora to use the Mac's Calendar, and list what it sees")
@@ -474,6 +502,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
         setup_logging(load_settings(args.home).home / "logs")
     agent = create(args.home)
     try:
+        if command == "permissions":
+            return permissions_command(agent, args, out)
         if command == "status":
             out.write(format_status(agent.status()) + "\n")
             return 0

@@ -44,6 +44,7 @@ from mcp import ClientSession, types
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
+from tools.permissions import kind_from_annotations
 from tools.registry import Tool, ToolError, ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -236,7 +237,8 @@ class MCPManager:
                 schema = t.input_schema if t.input_schema.get("type") == "object" \
                     else {"type": "object", "properties": {}}
                 registry.register(Tool(name, t.description or f"{t.name} from {state.name}",
-                                       schema, function, source=f"mcp:{state.name}"))
+                                       schema, function, source=f"mcp:{state.name}",
+                                       kind=kind_from_annotations(t.annotations)))
                 names.append(name)
         return names
 
