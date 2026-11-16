@@ -223,3 +223,22 @@ def test_action_note_and_history(tmp_path):
     agent.respond("thanks", session_id=first["session_id"])
     previous = client.requests[-1]["messages"][1]["content"]
     assert previous.startswith("Saved!\n\n[Recorded by the app") and "remember(fact='Aryan likes chai')" in previous
+
+
+def test_web_off_is_stated_and_replies_are_capped(tmp_path):
+    from fake import FakeClient, message, text
+    from harness.app import Settings, Sora
+    gate = {"retrieve": False, "query": "", "correction": False, "complex": False, "reason": "q"}
+    client = FakeClient([message(text("a")), message(text("b")), message(text("c"))], small=gate)
+    agent = Sora(Settings(home=tmp_path, memory_mirror=False, web_tools=False), client, connect_mcp=False)
+    agent.respond("who wrote it?")
+    agent.respond("a long report please", long=True)
+    first, second = client.requests[:2]
+    assert "no web_search tool" in first["system"][0]["text"] and "Never write tool calls as text" in first["system"][0]["text"]
+    assert (first["max_tokens"], second["max_tokens"]) == (16_000, 32_000)
+    bare = Sora(Settings(home=tmp_path / "b", memory_mirror=False, web_tools=False, bare=True),
+                FakeClient([message(text("x"))], small=gate), connect_mcp=False)
+    bare.respond("hi")
+    assert "no web_search tool" in bare.providers.anthropic_client.requests[0]["system"][0]["text"]
+    with_web = Sora(Settings(home=tmp_path / "w", memory_mirror=False), FakeClient([]), connect_mcp=False)
+    assert not any("web_search tool" in line for line in with_web.limits)

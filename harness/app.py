@@ -99,6 +99,10 @@ class Settings:
     long_iterations: int = 60
     long_budget_usd: float = 2.0            # per long task; at the cap it answers with what it has
     compact_at: int = 150_000               # summarize a turn's context past this many tokens; 0 = never
+    # Output tokens per model call. 16,000 (~$0.32 on Opus) is plenty for long reports; the API
+    # allows 64,000, and one runaway reply at that size cost $1.28 that no budget could stop.
+    max_output_tokens: int = 16_000
+    long_max_output_tokens: int = 32_000    # long tasks write longer
     history_turns: int = 10
     consolidate_every: int = 6
     web_tools: bool = True
@@ -182,6 +186,8 @@ def load_settings(home: Path | str | None = None) -> Settings:
         long_iterations=int(os.getenv("SORA_LONG_ITERATIONS", d.long_iterations)),
         long_budget_usd=float(os.getenv("SORA_LONG_BUDGET_USD", d.long_budget_usd)),
         compact_at=int(os.getenv("SORA_COMPACT_AT", d.compact_at)),
+        max_output_tokens=int(os.getenv("SORA_MAX_OUTPUT_TOKENS", d.max_output_tokens)),
+        long_max_output_tokens=int(os.getenv("SORA_LONG_MAX_OUTPUT_TOKENS", d.long_max_output_tokens)),
         history_turns=int(os.getenv("SORA_HISTORY_TURNS", d.history_turns)),
         consolidate_every=int(os.getenv("SORA_CONSOLIDATE_EVERY", d.consolidate_every)),
         web_tools=_flag("SORA_WEB_TOOLS", d.web_tools),
@@ -267,9 +273,13 @@ def capability_limits(capabilities: dict[str, bool], settings: Settings) -> list
     """One line per thing the user turned on that this provider can't do, so
     the model says "I can't" instead of promising a search it can't run."""
     lines = []
-    if settings.web_tools and not capabilities.get("web_search"):
-        lines.append("You cannot search the web or open web pages in this setup. When a question "
-                     "needs current information, say so instead of guessing.")
+    if not settings.web_tools or not capabilities.get("web_search"):
+        # Without this, a model told to "look things up" with no search tool wrote fake
+        # <invoke name="web_search"> calls as text until it hit the length limit (FRAMES
+        # closed-book run, 2026-11-16: three replies of 64,000 tokens, $1.28 each).
+        lines.append("You cannot search the web or open web pages in this setup, and you have no "
+                     "web_search tool. When a question needs current information, say so and answer "
+                     "from what you know, marked as unverified. Never write tool calls as text.")
     if settings.code_execution and not capabilities.get("code_execution"):
         lines.append("You cannot run code in this setup; work calculations out step by step.")
     return lines
@@ -496,7 +506,8 @@ class Sora:
                            inline=len(prepared.blocks))
                 if s.bare:     # the baseline: no memory, skills, lessons, planner or persona
                     found, lessons, matched, tool_notes, planning = GateResult(False, "", False, "bare"), [], [], {}, False
-                    system = [{"type": "text", "text": BARE_SYSTEM, "cache_control": {"type": "ephemeral"}},
+                    bare = "\n\n".join([BARE_SYSTEM, *self.limits])
+                    system = [{"type": "text", "text": bare, "cache_control": {"type": "ephemeral"}},
                               {"type": "text", "text": f"Current local time: "
                                                        f"{datetime.now().astimezone().strftime('%A %d %B %Y, %H:%M %Z')}"}]
                 else:
@@ -524,6 +535,7 @@ class Sora:
                             {"role": "user", "content": content}]
 
                 # 5. the loop
+                self.provider.max_output = s.long_max_output_tokens if long else s.max_output_tokens
                 result = run_loop(self.provider, self.model_id, system, messages, self.registry, notify,
                                   effort=s.effort,
                                   max_iterations=s.long_iterations if long else s.max_iterations,

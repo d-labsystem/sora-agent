@@ -50,7 +50,7 @@ COMPACT_BETA = "compact-2026-09-04"     # on-demand compaction (loop/compaction.
 # Top-level automatic caching: the API puts a breakpoint on the last block of
 # each request, so every step of the loop reads the steps before it from cache.
 AUTO_CACHE = {"type": "ephemeral"}
-MAX_TOKENS = 64000
+MAX_TOKENS = 64000      # the API's ceiling for one reply; sora's own cap is Settings.max_output_tokens
 HF_BASE_URL = "https://router.huggingface.co/v1"
 
 OnText = Callable[[str], None]
@@ -162,6 +162,7 @@ def _has_compaction(messages: list) -> bool:
 class AnthropicProvider:
     name = "anthropic"
     capabilities = dict.fromkeys(CAPABILITIES, True)
+    max_output = MAX_TOKENS          # per call; the harness lowers it (a runaway reply can't cost more)
 
     def __init__(self, client):
         self.client = client
@@ -176,7 +177,7 @@ class AnthropicProvider:
         if _has_compaction(messages):
             betas.append(COMPACT_BETA)        # needed on every request that carries the signed block
         with self.client.beta.messages.stream(
-            model=model, max_tokens=MAX_TOKENS, system=system, messages=messages,
+            model=model, max_tokens=self.max_output, system=system, messages=messages,
             tools=tools, output_config={"effort": effort},
             betas=betas, fallbacks="default",   # a declined request is retried on another model
             cache_control=AUTO_CACHE, **extra,
@@ -358,6 +359,7 @@ def _effort_with_tools_refused(exc: Exception) -> bool:
 
 
 class OpenAICompatProvider:
+    max_output = 32000
     """Chat Completions, which OpenAI, Hugging Face's router and local servers
     (vLLM, SGLang, TGI) all speak. `openai_params` turns on the two parameters
     only OpenAI's own API accepts: max_completion_tokens and reasoning_effort.
@@ -406,7 +408,7 @@ class OpenAICompatProvider:
         request: dict[str, Any] = {
             "model": model, "messages": to_openai_messages(system, messages),
             "stream": True, "stream_options": {"include_usage": True},
-            **self._limits(model, effort, 32000, tools=bool(functions))}
+            **self._limits(model, effort, self.max_output, tools=bool(functions))}
         if functions:
             request["tools"] = functions
             if final:
@@ -537,6 +539,7 @@ def _search_event(action) -> tuple[str, dict]:
 
 
 class OpenAIResponsesProvider:
+    max_output = 32000
     """OpenAI's Responses API. Compared with Chat Completions it keeps the
     model's reasoning during tool use and runs web search and code on
     OpenAI's side, like Anthropic's server tools.
@@ -573,7 +576,7 @@ class OpenAIResponsesProvider:
         functions = to_responses_tools(tools)
         request: dict[str, Any] = {
             "model": model, "input": to_responses_input(messages), "stream": True,
-            "store": False, "max_output_tokens": 32000, "prompt_cache_key": f"sora-{model}"}
+            "store": False, "max_output_tokens": self.max_output, "prompt_cache_key": f"sora-{model}"}
         instructions = _system_text(system)
         if instructions:
             request["instructions"] = instructions
