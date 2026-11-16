@@ -305,9 +305,12 @@ def append_case(path: Path, case: dict) -> None:
 # ---- runner
 
 def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
-             client=None, judge_model: str | None = None) -> dict:
+             client=None, judge_model: str | None = None, grade=None) -> dict:
+    """Run one case in a fresh home. `grade(case, turn)` (benchmarks) replaces
+    the case's checks with its own: {"checks": {...}, "judge": {...} | None}."""
     with tempfile.TemporaryDirectory(prefix="sora-eval-") as home:
         agent = None
+        spent = 0.0          # every turn of the case; kept even if a later step fails
         try:
             agent = factory(Path(home), tracer)
             for fact in case.get("setup_facts", []):
@@ -321,7 +324,6 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
                 file.write_text(content, encoding="utf-8")
             session = None
             turn: dict = {}
-            spent = 0.0                        # every turn of the case, not just the last
             for message in case.get("messages") or [case["message"]]:
                 extra = {"long": True} if case.get("long") else {}   # long task: more steps, a cap
                 turn = agent.respond(message, session_id=session, source="eval", eval_run=run_id, **extra)
@@ -337,14 +339,24 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
                 tracer.set_judge(turn["id"], verdict["score"], verdict["reason"])
                 checks[f"judge >= {case['expect']['judge_min']}"] = \
                     verdict["score"] >= case["expect"]["judge_min"]
-            if turn.get("status") != "ok":
+            if grade is not None:
+                # A benchmark grades the answer by its own rules. A turn that stopped at
+                # its step or dollar limit still answered, so only an error fails it outright.
+                graded = grade(case, turn)
+                checks, verdict = graded["checks"], graded.get("judge")
+                if verdict:
+                    tracer.set_judge(turn["id"], verdict["score"], verdict["reason"])
+                if turn.get("status") == "error":
+                    checks["turn finished"] = False
+            elif turn.get("status") != "ok":
                 checks["turn finished"] = False
             return {"id": case["id"], "turn_id": turn.get("id"), "passed": all(checks.values()),
                     "checks": checks, "judge": verdict, "reply": (turn.get("reply") or "")[:500],
                     "cost_usd": spent}
         except Exception as exc:
             return {"id": case["id"], "turn_id": None, "passed": False, "checks": {},
-                    "judge": None, "error": f"{type(exc).__name__}: {exc}", "cost_usd": 0}
+                    "judge": None, "error": f"{type(exc).__name__}: {exc}",
+                    "cost_usd": spent}   # the turns ran and were billed; budgets must see it
         finally:
             semantic = getattr(getattr(agent, "store", None), "semantic", None)
             if semantic is not None and semantic.name != "sqlite":
