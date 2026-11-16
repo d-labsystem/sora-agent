@@ -524,7 +524,16 @@ class Sora:
                 self.plan.reset(notify)
                 self.approvals.notify = notify
                 if self.helpers:
-                    self.helpers.reset(notify, s.long_budget_usd if long else 0.0)
+                    spent = {"usd": 0.0}                     # every model call this turn, helpers included
+
+                    def counted(kind, _inner=notify, **data):
+                        if kind == "llm":
+                            spent["usd"] += data.get("cost_usd") or 0.0
+                        _inner(kind, **data)
+                    notify = counted
+                    self.plan.reset(notify)
+                    self.approvals.notify = notify
+                    self.helpers.reset(notify, s.long_budget_usd if long else 0.0, lambda: spent["usd"])
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
                        skills=[k.name for k in matched], tool_notes=sorted(tool_notes),

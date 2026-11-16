@@ -68,8 +68,11 @@ class Helpers:
         self.spent = 0.0                   # what helpers spent this turn: the main loop's budget counts it
         self._lock = threading.Lock()
 
-    def reset(self, notify, turn_budget: float = 0.0) -> None:
+        self.turn_spent = lambda: self.spent   # everything the turn spent so far (the harness sets it)
+
+    def reset(self, notify, turn_budget: float = 0.0, turn_spent=None) -> None:
         self.notify, self.turn_budget, self.spent = notify, turn_budget, 0.0
+        self.turn_spent = turn_spent or (lambda: self.spent)
 
     def _tools(self) -> ToolRegistry:
         """The helper's view: the same (permission-gated) tool objects, fewer of them."""
@@ -121,7 +124,9 @@ class Helpers:
             raise ToolError(f"at most {self.max_parallel} tasks at once; group or split the work")
         # Each helper gets its own cap, but never more than its share of what's left of the
         # turn's budget: without this, four helpers could spend $2 on a $0.50 long task.
-        left = max(0.0, self.turn_budget - self.spent) if self.turn_budget else 0.0
+        # What's left of the WHOLE turn's budget: the main loop's spending too (BrowseComp
+        # rerun: helpers got $0.25 each after the main loop had already spent $0.86 of $0.50).
+        left = max(0.0, self.turn_budget - self.turn_spent()) if self.turn_budget else 0.0
         self._cap = min(self.budget_usd, left / len(tasks)) if self.turn_budget else self.budget_usd
         if self.turn_budget and self._cap < 0.01:
             raise ToolError("The task's budget is used up; finish with what you have.")

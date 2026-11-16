@@ -62,7 +62,10 @@ def confidence(reply: str) -> int | None:
 class BrowseComp:
     name = "browsecomp"
     group_by = "topic"
-    settings = {"long_budget_usd": 0.50}          # per question, through the long-task cap
+    # Per question, through the long-task cap. The cap is checked between model calls, and one
+    # web-heavy call (several searches and page reads on the provider's side) can cost $0.30-0.90
+    # by itself, so a question can end somewhat above it.
+    settings = {"long_budget_usd": 0.50}
 
     def __init__(self, grader, grader_model: str):
         self.grader, self.grader_model = grader, grader_model

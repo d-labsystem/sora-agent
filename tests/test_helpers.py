@@ -160,3 +160,15 @@ def test_the_main_budget_check_counts_helper_spending():
     result = run_loop(client, "claude-opus-5-5", "s", [{"role": "user", "content": "x"}], reg, lambda *a, **k: None,
                       max_iterations=10, budget_usd=1.0, extra_spent=lambda: 5.0)   # helpers already spent $5
     assert result.budget_reached and result.iterations == 1
+
+
+
+def test_helpers_see_what_the_main_loop_already_spent(tmp_path):
+    h, _, _ = helpers(tmp_path, answer_by_task())
+    main = {"usd": 0.30}
+    h.reset(None, turn_budget=0.50, turn_spent=lambda: main["usd"])
+    h.delegate([{"task": "a"}, {"task": "b"}])
+    assert h._cap == pytest.approx(0.10)                       # (0.50 - 0.30) / 2
+    main["usd"] = 0.86
+    with pytest.raises(ToolError, match="budget is used up"):
+        h.delegate([{"task": "c"}])
