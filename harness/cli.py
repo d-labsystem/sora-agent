@@ -372,7 +372,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     ev.add_argument("--repeat", default="1")
     ev.add_argument("--rejudge", metavar="RUN_ID", help="grade an old run again; the agent doesn't run")
     bn = sub.add_parser("bench", help="run a public benchmark (frames) on a sample, with a spending cap")
-    bn.add_argument("name", choices=["frames"])
+    bn.add_argument("name", choices=["frames", "gaia"])
+    bn.add_argument("--bare", action="store_true",
+                    help="the same model and tools without sora's harness, to measure what the harness adds")
     bn.add_argument("--n", type=int, default=50, help="questions to sample (0 = all)")
     bn.add_argument("--budget", type=float, default=12.0, help="stop once this many dollars are spent")
     bn.add_argument("--seed", type=int, default=0)
@@ -407,7 +409,7 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "bench":      # builds its own agents, one per question
         from ops import bench
-        return bench.main(args.name, args.n, args.budget, args.seed, args.label, out)
+        return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sys
 
-BENCHMARKS = {"frames": "ops.bench.frames:Frames"}
+BENCHMARKS = {"frames": "ops.bench.frames:Frames", "gaia": "ops.bench.gaia:Gaia"}
 
 
 def build(name: str, grader, grader_model: str):
@@ -15,14 +15,17 @@ def build(name: str, grader, grader_model: str):
     return getattr(__import__(module, fromlist=[cls]), cls)(grader, grader_model)
 
 
-def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=sys.stdout) -> int:
+def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=sys.stdout,
+         bare: bool = False) -> int:
     from harness.app import eval_setup, load_settings
     from ops.bench import runner
-    tracer, grader, model, grader_model, factory = eval_setup()
+    tracer, grader, model, grader_model, factory = eval_setup(bare=bare)
     bench = build(name, grader, grader_model)
     folder = load_settings().home / "benchmarks" / name
-    items = runner.sample(bench.load(folder), n, seed)
-    out.write(f"{name}: {len(items)} questions (seed {seed}), budget ${budget:.2f}, model {model}\n")
+    items = runner.sample(bench.load(folder), n, seed, getattr(bench, "strata_key", ""))
+    label = ", ".join(x for x in (label, "bare model" if bare else "") if x)
+    out.write(f"{name}: {len(items)} questions (seed {seed}), budget ${budget:.2f}, model {model}"
+              f"{' (bare model: no sora harness)' if bare else ''}\n")
     out.flush()
 
     def progress(r: dict) -> None:

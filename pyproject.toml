@@ -30,6 +30,9 @@ otel = [
 calendar = [
     "pyobjc-framework-eventkit>=11",
 ]
+bench = [
+    "pyarrow>=18",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

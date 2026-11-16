@@ -49,7 +49,7 @@ class Item:
 
 class Benchmark(Protocol):
     name: str
-    group_by: str                              # meta key to break results down by ("" for none)
+    group_by: str | tuple                      # meta key(s) to break results down by ("" for none)
 
     def load(self, folder: Path) -> list[Item]: ...
 
@@ -70,12 +70,25 @@ def download(url: str, path: Path) -> Path:
     return path
 
 
-def sample(items: list[Item], n: int, seed: int = 0) -> list[Item]:
-    """The same n items for the same seed, whatever order they were loaded in."""
+def sample(items: list[Item], n: int, seed: int = 0, strata: str = "") -> list[Item]:
+    """The same n items for the same seed, whatever order they were loaded in.
+    With `strata` (a meta key, e.g. GAIA's level), each stratum gets its share
+    of n in proportion to its size (largest remainder), so a small, hard level
+    isn't left with two questions by chance."""
     ordered = sorted(items, key=lambda i: i.id)
     if n <= 0 or n >= len(ordered):
         return ordered
-    return random.Random(seed).sample(ordered, n)
+    rng = random.Random(seed)
+    if not strata:
+        return rng.sample(ordered, n)
+    groups: dict[str, list[Item]] = defaultdict(list)
+    for item in ordered:
+        groups[str(item.meta.get(strata))].append(item)
+    exact = {k: n * len(v) / len(ordered) for k, v in groups.items()}
+    quota = {k: int(x) for k, x in exact.items()}
+    for k in sorted(exact, key=lambda k: exact[k] - quota[k], reverse=True)[:n - sum(quota.values())]:
+        quota[k] += 1
+    return [item for k in sorted(groups) for item in rng.sample(groups[k], quota[k])]
 
 
 def wilson(correct: int, total: int, z: float = 1.96) -> tuple[float, float]:
@@ -109,16 +122,18 @@ def run(bench: Benchmark, items: list[Item], factory, tracer, budget_usd: float,
     correct = sum(r["passed"] for r in results)
     low, high = wilson(correct, len(results))
     groups: dict[str, list[bool]] = defaultdict(list)
-    if bench.group_by:
+    keys = (bench.group_by,) if isinstance(bench.group_by, str) else bench.group_by
+    for key in filter(None, keys):
         for r in results:
-            for key in str(r["meta"].get(bench.group_by) or "other").split(" | "):
-                groups[key.strip()].append(r["passed"])
+            for value in str(r["meta"].get(key) or "other").split(" | "):
+                groups[f"{key}: {value.strip()}" if len(keys) > 1 else value.strip()].append(r["passed"])
     run = {"id": run_id, "dataset": f"{bench.name}{f' ({label})' if label else ''}", "model": model,
            "cases": len(results), "passed": correct, "cost_usd": round(spent, 6), "results": results,
            "started_at": started, "ended_at": now_iso()}
     tracer.save_eval_run(run)
     return {**run, "accuracy": correct / len(results) if results else 0.0, "interval": (low, high),
             "planned": len(items), "stopped_by_budget": stopped,
+            "flagged": [r["id"] for r in results if (r.get("judge") or {}).get("contaminated")],
             "groups": {k: (sum(v), len(v)) for k, v in sorted(groups.items())}}
 
 
@@ -128,6 +143,8 @@ def report(summary: dict) -> str:
     lines = [f"{summary['dataset']}: {summary['passed']}/{n} correct = {summary['accuracy']:.0%} "
              f"(95% interval {low:.0%}–{high:.0%}), cost ${summary['cost_usd']:.2f} "
              f"(${summary['cost_usd'] / max(n, 1):.3f}/question), run {summary['id']}"]
+    if summary.get("flagged"):
+        lines.append(f"searched for the benchmark itself (possible contamination): {', '.join(summary['flagged'])}")
     if summary["stopped_by_budget"]:
         lines.append(f"stopped at the budget after {n} of {summary['planned']} questions")
     for group, (ok, total) in summary["groups"].items():

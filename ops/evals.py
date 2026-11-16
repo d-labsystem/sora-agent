@@ -324,8 +324,10 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
                 file.write_text(content, encoding="utf-8")
             session = None
             turn: dict = {}
-            for message in case.get("messages") or [case["message"]]:
+            for n, message in enumerate(case.get("messages") or [case["message"]]):
                 extra = {"long": True} if case.get("long") else {}   # long task: more steps, a cap
+                if n == 0 and case.get("attachments"):               # files go with the first message
+                    extra["attachments"] = [Path(a) for a in case["attachments"]]
                 turn = agent.respond(message, session_id=session, source="eval", eval_run=run_id, **extra)
                 session = turn.get("session_id")
                 spent += turn.get("cost_usd") or 0
