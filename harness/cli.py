@@ -375,6 +375,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     bn.add_argument("name", choices=["frames", "gaia"])
     bn.add_argument("--bare", action="store_true",
                     help="the same model and tools without sora's harness, to measure what the harness adds")
+    bn.add_argument("--closed-book", action="store_true",
+                    help="the model alone, no tools: a high score means the answers were memorised")
     bn.add_argument("--n", type=int, default=50, help="questions to sample (0 = all)")
     bn.add_argument("--budget", type=float, default=12.0, help="stop once this many dollars are spent")
     bn.add_argument("--seed", type=int, default=0)
@@ -409,7 +411,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "bench":      # builds its own agents, one per question
         from ops import bench
-        return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare)
+        return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare,
+                          closed_book=args.closed_book)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

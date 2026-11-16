@@ -157,3 +157,12 @@ def test_gaia_loads_locally_and_attaches_files(tmp_path):
     assert g.case(items[1])["attachments"] == [str(tmp_path / "files" / "s.xlsx")]
     graded = g.grade(items[1], {"reply": "Sum is 4.5\nFINAL ANSWER: 4.50", "spans": []})
     assert graded["checks"] == {"correct": True} and graded["judge"]["extracted"] == "4.50"
+
+
+
+def test_closed_book_has_no_tools_at_all(tmp_path):
+    from ops.bench import CLOSED_BOOK
+    client = FakeClient([message(text("Paris"))], small=GATE)
+    agent = Sora(Settings(home=tmp_path, memory_mirror=False, **CLOSED_BOOK), client, connect_mcp=False)
+    agent.respond("Capital of France?")
+    assert client.requests[0].get("tools") in (None, [])
