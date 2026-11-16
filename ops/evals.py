@@ -134,6 +134,8 @@ def case_checks(expect: dict, turn: dict, facts: list[str], workspace: Path | No
     for name, texts in (expect.get("files") or {}).items():
         path = (workspace / name) if workspace else None
         content = path.read_text(encoding="utf-8").lower() if path and path.is_file() else None
+        if content is not None:     # 1,550 and 2,88,000 count as 1550 and 288000
+            content = re.sub(r"(?<=\d)[,\u00a0 ](?=\d)", "", content)
         out[f"wrote {name}"] = content is not None
         for text in texts:
             out[f"{name} has {text!r}"] = content is not None and text.lower() in content

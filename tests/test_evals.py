@@ -204,3 +204,12 @@ def test_judge_sees_visuals():
     judge(client, "m", "q", "a", visuals=summary)
     prompt = client.small_requests[0]["messages"][0]["content"]
     assert "weights=19" in prompt
+
+
+
+def test_file_checks_ignore_thousands_separators(tmp_path):
+    from ops.evals import case_checks
+    (tmp_path / "budget.md").write_text("Yearly savings: ₹2,88,000\nFood: 1,550", encoding="utf-8")
+    checks = case_checks({"files": {"budget.md": ["288000", "1550"], "missing.md": []}}, {"reply": ""}, [], tmp_path)
+    assert checks == {"wrote budget.md": True, "budget.md has '288000'": True, "budget.md has '1550'": True,
+                      "wrote missing.md": False}
