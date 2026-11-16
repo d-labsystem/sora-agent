@@ -427,7 +427,10 @@ class Sora:
         if self.settings.notes and "notes" not in config:
             config["notes"] = notes_server.config()
         if self.settings.browser and not self.settings.bare and "browser" not in config:
-            config["browser"] = browser_server.config(home, self.settings.browser_engine)
+            # SORA_BROWSER_ALLOW_LOCAL=1 is for evals on local test pages only: it lifts the block on
+            # this Mac's addresses, which also exposes sora's own dashboard to pages.
+            config["browser"] = browser_server.config(home, self.settings.browser_engine,
+                                                      allow_local=os.getenv("SORA_BROWSER_ALLOW_LOCAL") == "1")
         if self.settings.calendar and "calendar" not in config:
             config["calendar"] = calendar_server.config()
         if self.calendar_on() and "gcal" not in config:

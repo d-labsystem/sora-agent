@@ -358,8 +358,9 @@ def build(home: Path, allow_local: bool = False, engine: str = "auto") -> MCPSer
     return server
 
 
-def config(home: Path, engine: str = "auto") -> dict:
-    return {"command": sys.executable, "args": [str(Path(__file__).resolve()), str(home), "--engine", engine]}
+def config(home: Path, engine: str = "auto", allow_local: bool = False) -> dict:
+    return {"command": sys.executable, "args": [str(Path(__file__).resolve()), str(home), "--engine", engine,
+                                                *(["--allow-local"] if allow_local else [])]}
 
 
 async def login(home: Path, url: str, engine: str = "auto") -> None:
