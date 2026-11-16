@@ -440,6 +440,7 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     bn.add_argument("--budget", type=float, default=12.0, help="stop once this many dollars are spent")
     bn.add_argument("--seed", type=int, default=0)
     bn.add_argument("--label", default="")
+    bn.add_argument("--ids", default="", help="comma-separated question ids to run instead of a sample")
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
@@ -480,7 +481,7 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     if command == "bench":      # builds its own agents, one per question
         from ops import bench
         return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare,
-                          closed_book=args.closed_book)
+                          closed_book=args.closed_book, ids=args.ids)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

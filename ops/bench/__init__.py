@@ -28,7 +28,7 @@ CLOSED_BOOK = {"bare": True, "web_tools": False, "workspace": False, "code_execu
 
 
 def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=sys.stdout,
-         bare: bool = False, closed_book: bool = False) -> int:
+         bare: bool = False, closed_book: bool = False, ids: str = "") -> int:
     from harness.app import eval_setup, load_settings
     from ops.bench import runner
     # A benchmark's own settings (e.g. BrowseComp's per-question cap), then the mode's.
@@ -37,7 +37,17 @@ def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=s
     tracer, grader, model, grader_model, factory = eval_setup(**overrides)
     bench = build(name, grader, grader_model)
     folder = load_settings().home / "benchmarks" / name
-    items = runner.sample(bench.load(folder), n, seed, getattr(bench, "strata_key", ""))
+    items = bench.load(folder)
+    if ids:                       # rerun chosen questions (e.g. ones that crashed), in the given order
+        wanted = [i.strip() for i in ids.split(",") if i.strip()]
+        by_id = {i.id: i for i in items}
+        missing = [i for i in wanted if i not in by_id]
+        if missing:
+            out.write(f"unknown question ids: {', '.join(missing)}\n")
+            return 1
+        items = [by_id[i] for i in wanted]
+    else:
+        items = runner.sample(items, n, seed, getattr(bench, "strata_key", ""))
     mode = "closed book" if closed_book else "bare model" if bare else ""
     label = ", ".join(x for x in (label, mode) if x)
     out.write(f"{name}: {len(items)} questions (seed {seed}), budget ${budget:.2f}, model {model}"
