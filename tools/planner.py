@@ -36,7 +36,8 @@ PLAN_NOTE = ("This request has several parts. Before anything else, call update_
              "concrete steps that together finish the whole request. Work through them in order, calling "
              "update_plan again as each step starts and finishes (send the whole list each time). If a step "
              "turns out impossible, mark it blocked with a note saying why; if you learn something that "
-             "changes the plan, revise it. Answer only when every step is done or blocked.")
+             "changes the plan, revise it. Answer only when every step is done or blocked. Research steps "
+             "that don't depend on each other can run at the same time with delegate.")
 
 NUDGE = ("Your plan still has open steps: {steps}. Finish them now, or, if one can't be done, mark it "
          "blocked in update_plan with the reason, then give your final answer.")

@@ -49,6 +49,7 @@ CONTROL = {"approve", "discard_draft"}         # the gate's own tools: never gat
 KINDS = {
     "search_memory": "read", "load_skill": "read", "update_plan": "read", "current_time": "read",
     "show_chart": "read", "show_table": "read", "show_diagram": "read",
+    "delegate": "read",
     "remember": "local", "forget": "local", "save_skill": "local", "run_code": "local",
 }
 

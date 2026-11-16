@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,6 +43,10 @@ from tools.permissions import CONTROL, Permissions
 from tools.registry import Tool, ToolError, ToolRegistry
 
 TTL = 600               # seconds a draft stays approvable
+
+# Set on a helper's thread (loop/helpers.py). Helpers can't talk to the user, so
+# inside one an "ask" becomes a refusal and the main loop does the asking.
+IN_HELPER = threading.local()
 
 
 @dataclass
@@ -108,6 +113,9 @@ class Approvals:
                             rule=decision.rule, why=decision.why, ok=decision.action != "deny")
             if decision.action == "allow":
                 return self.originals[name](**args)
+            if decision.action == "ask" and getattr(IN_HELPER, "active", False):
+                raise ToolError(f"Helpers can't ask the user for approval ({decision.describe()}). Don't do this "
+                                "step: say in your report that it needs the user's approval.")
             if decision.action == "deny":
                 raise ToolError(f"Not allowed by the user's permission rules ({decision.describe()}). "
                                 "Don't try another way around it; tell the user what you couldn't do and why.")

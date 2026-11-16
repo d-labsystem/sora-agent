@@ -39,6 +39,7 @@ import anthropic
 from dotenv import load_dotenv
 
 from loop.agent import run_loop
+from loop.helpers import Helpers
 from loop.providers import ProviderError, Providers, split_model
 from memory.consolidation import consolidate
 from memory.gate import GateResult, recall
@@ -114,6 +115,10 @@ class Settings:
     # gate calls complex too, "off". On short tasks it cost +54% for no gain (complex-tasks eval).
     planner: str = "long"
     sandbox: str = "auto"                   # run_code in Docker (tools/sandbox.py): auto | on | off
+    helpers: bool = True                    # delegate: parallel research helpers (loop/helpers.py)
+    helper_model: str = ""                  # "" = the main model; e.g. claude-sonnet-5-5 to save money
+    helper_steps: int = 12
+    helper_budget_usd: float = 0.50         # per helper
     browser: bool = False                   # a real browser (tools/browser_server.py), sora's own profile
     browser_engine: str = "auto"            # auto | chrome | chromium
     # The bare-model baseline for benchmarks: the same model, web and workspace tools and
@@ -189,6 +194,10 @@ def load_settings(home: Path | str | None = None) -> Settings:
         calendar=_flag("SORA_CALENDAR", d.calendar),
         sandbox=os.getenv("SORA_SANDBOX", d.sandbox).strip().lower(),
         browser=_flag("SORA_BROWSER", d.browser),
+        helpers=_flag("SORA_HELPERS", d.helpers),
+        helper_model=os.getenv("SORA_HELPER_MODEL", d.helper_model).strip(),
+        helper_steps=int(os.getenv("SORA_HELPER_STEPS", d.helper_steps)),
+        helper_budget_usd=float(os.getenv("SORA_HELPER_BUDGET_USD", d.helper_budget_usd)),
         browser_engine=os.getenv("SORA_BROWSER_ENGINE", d.browser_engine).strip().lower(),
         planner={"1": "always", "true": "always", "0": "off", "false": "off"}.get(
             os.getenv("SORA_PLANNER", d.planner).strip().lower(),
@@ -414,6 +423,13 @@ class Sora:
         if connect_mcp:
             self._start_mcp()
         self.approvals.guard(self.registry)            # every tool, MCP ones included, through the rules
+        # Helpers use the gated tools above (a filtered view), so rules apply inside them too.
+        self.helpers = None
+        if settings.helpers and not settings.bare:
+            helper_provider, helper_id = self.providers.get(settings.helper_model or settings.model)
+            self.helpers = Helpers(helper_provider, helper_id, self.registry, settings.effort,
+                                   settings.helper_steps, settings.helper_budget_usd)
+            self.registry.register(self.helpers.tool())
 
     def _start_mcp(self) -> None:
         home = self.settings.home
@@ -496,6 +512,8 @@ class Sora:
                                           tool_notes=tool_notes, planning=planning)
                 self.plan.reset(notify)
                 self.approvals.notify = notify
+                if self.helpers:
+                    self.helpers.notify = notify
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
                        skills=[k.name for k in matched], tool_notes=sorted(tool_notes),
