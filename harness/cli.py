@@ -431,7 +431,7 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     ev.add_argument("--repeat", default="1")
     ev.add_argument("--rejudge", metavar="RUN_ID", help="grade an old run again; the agent doesn't run")
     bn = sub.add_parser("bench", help="run a public benchmark (frames) on a sample, with a spending cap")
-    bn.add_argument("name", choices=["frames", "gaia"])
+    bn.add_argument("name", choices=["frames", "gaia", "browsecomp"])
     bn.add_argument("--bare", action="store_true",
                     help="the same model and tools without sora's harness, to measure what the harness adds")
     bn.add_argument("--closed-book", action="store_true",

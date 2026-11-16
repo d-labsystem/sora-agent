@@ -7,12 +7,17 @@ from __future__ import annotations
 
 import sys
 
-BENCHMARKS = {"frames": "ops.bench.frames:Frames", "gaia": "ops.bench.gaia:Gaia"}
+BENCHMARKS = {"frames": "ops.bench.frames:Frames", "gaia": "ops.bench.gaia:Gaia",
+              "browsecomp": "ops.bench.browsecomp:BrowseComp"}
+
+
+def benchmark_class(name: str):
+    module, cls = BENCHMARKS[name].split(":")
+    return getattr(__import__(module, fromlist=[cls]), cls)
 
 
 def build(name: str, grader, grader_model: str):
-    module, cls = BENCHMARKS[name].split(":")
-    return getattr(__import__(module, fromlist=[cls]), cls)(grader, grader_model)
+    return benchmark_class(name)(grader, grader_model)
 
 
 # The contamination check: the model alone, no tools at all. If it scores about as
@@ -26,7 +31,9 @@ def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=s
          bare: bool = False, closed_book: bool = False) -> int:
     from harness.app import eval_setup, load_settings
     from ops.bench import runner
-    overrides = CLOSED_BOOK if closed_book else {"bare": True} if bare else {}
+    # A benchmark's own settings (e.g. BrowseComp's per-question cap), then the mode's.
+    overrides = {**getattr(benchmark_class(name), "settings", {}),
+                 **(CLOSED_BOOK if closed_book else {"bare": True} if bare else {})}
     tracer, grader, model, grader_model, factory = eval_setup(**overrides)
     bench = build(name, grader, grader_model)
     folder = load_settings().home / "benchmarks" / name

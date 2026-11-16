@@ -90,3 +90,43 @@ def test_a_failing_grader_still_counts_what_the_question_cost(tmp_path):
     summary = runner.run(bench, bench.load(tmp_path), factory, tracer, budget_usd=1e-9)
     assert summary["results"][0]["error"] and summary["results"][0]["cost_usd"] > 0
     assert summary["stopped_by_budget"] and summary["cases"] == 1
+
+
+# ---- BrowseComp
+
+def test_browsecomp_decrypts_with_the_published_scheme():
+    from ops.bench.browsecomp import decrypt, encrypt, derive_key
+    import base64, hashlib
+    assert derive_key("canary", 40)[:32] == hashlib.sha256(b"canary").digest()          # SHA-256, repeated
+    secret = encrypt("Which match ended 2-1 after extra time?", "BROWSECOMP:abc")
+    assert base64.b64decode(secret) != b"Which match"                                     # actually scrambled
+    assert decrypt(secret, "BROWSECOMP:abc") == "Which match ended 2-1 after extra time?"
+    try:                                                   # a wrong key gives gibberish or invalid text
+        assert decrypt(secret, "wrong key") != "Which match ended 2-1 after extra time?"
+    except UnicodeDecodeError:
+        pass
+
+
+def test_browsecomp_loads_cases_as_long_tasks_and_reads_confidence(tmp_path):
+    from ops.bench.browsecomp import BrowseComp, confidence, encrypt
+    (tmp_path / "browse_comp_test_set.csv").write_text(
+        "problem,answer,problem_topic,canary\n"
+        f"{encrypt('Q one?', 'k1')},{encrypt('Answer One', 'k1')},Sports,k1\n", encoding="utf-8")
+    [item] = BrowseComp(None, "").load(tmp_path)
+    assert (item.id, item.question, item.answer, item.meta) == ("bc-0000", "Q one?", "Answer One", {"topic": "Sports"})
+    case = BrowseComp(None, "").case(item)
+    assert case["long"] is True and "Exact Answer:" in case["message"] and "Confidence:" in case["message"]
+    assert confidence("Explanation: ...\nExact Answer: X\nConfidence: 85%") == 85
+    assert confidence("**Confidence:** 40 %") == 40 and confidence("no idea") is None
+    assert BrowseComp.settings == {"long_budget_usd": 0.50}
+
+
+def test_calibration_report():
+    from ops.bench.runner import calibrate
+    results = [{"passed": True, "judge": {"confidence": 90}}, {"passed": False, "judge": {"confidence": 90}},
+               {"passed": False, "judge": {"confidence": 10}}, {"passed": True, "judge": {"confidence": None}}]
+    text = calibrate(results)
+    assert "3 answers with a stated confidence" in text and "accuracy 33%" in text
+    assert "said 70-100%: 1/2 right (said 90% on average)" in text
+    assert "said 0-30%: 0/1 right" in text and "calibration error 30%" in text    # 2/3 x 40% + 1/3 x 10%
+    assert calibrate([{"passed": True, "judge": {}}]) == ""

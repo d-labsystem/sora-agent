@@ -149,4 +149,30 @@ def report(summary: dict) -> str:
         lines.append(f"stopped at the budget after {n} of {summary['planned']} questions")
     for group, (ok, total) in summary["groups"].items():
         lines.append(f"  {group:32} {ok}/{total}")
+    calibration = calibrate(summary["results"])
+    if calibration:
+        lines.append(calibration)
+    return "\n".join(lines)
+
+
+def calibrate(results: list[dict]) -> str:
+    """Does stated confidence match reality? Mean confidence vs accuracy, and
+    accuracy within confidence bands. Calibration error is the gap between
+    confidence and accuracy, averaged over answers (0 = perfectly calibrated)."""
+    pairs = [((r.get("judge") or {}).get("confidence"), r["passed"]) for r in results]
+    pairs = [(c, ok) for c, ok in pairs if c is not None]
+    if not pairs:
+        return ""
+    bands = [(0, 30), (30, 70), (70, 101)]
+    lines = [f"calibration ({len(pairs)} answers with a stated confidence): mean confidence "
+             f"{sum(c for c, _ in pairs) / len(pairs):.0f}%, accuracy {sum(ok for _, ok in pairs) / len(pairs):.0%}"]
+    error = 0.0
+    for lo, hi in bands:
+        group = [(c, ok) for c, ok in pairs if lo <= c < hi]
+        if group:
+            conf, acc = sum(c for c, _ in group) / len(group) / 100, sum(ok for _, ok in group) / len(group)
+            error += len(group) / len(pairs) * abs(conf - acc)
+            lines.append(f"  said {lo}-{min(hi, 100)}%: {sum(ok for _, ok in group)}/{len(group)} right "
+                         f"(said {conf:.0%} on average)")
+    lines.append(f"  calibration error {error:.0%}")
     return "\n".join(lines)
