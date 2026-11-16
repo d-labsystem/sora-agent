@@ -144,3 +144,19 @@ def test_live_runaway_code_is_killed(tmp_path):
         Sandbox(tmp_path, timeout=5).run_code("while True: pass")
     left = subprocess.run(["docker", "ps", "-q", "--filter", "name=sora-sbx-"], capture_output=True, text=True).stdout
     assert left.strip() == ""                                   # nothing left running
+
+
+
+@live
+def test_live_code_changes_can_be_undone(tmp_path):
+    from tools.workspace_server import Workspace
+    (tmp_path / "list.md").write_text("- eggs\n- rice\n")
+    (tmp_path / "old.txt").write_text("keep me")
+    out = Sandbox(tmp_path).run_code(
+        "import os\nopen('list.md', 'w').write('- bread\\n')\nos.remove('old.txt')\nopen('new.txt', 'w').write('n')")
+    assert "changed or deleted existing files (undo_change can restore them): list.md, old.txt" in out
+    ws = Workspace(tmp_path)
+    ws.undo_change("list.md")
+    ws.undo_change("old.txt")
+    assert (tmp_path / "list.md").read_text() == "- eggs\n- rice\n" and (tmp_path / "old.txt").read_text() == "keep me"
+    assert "new.txt" not in out.split("undo_change")[0]          # new files aren't "changed"

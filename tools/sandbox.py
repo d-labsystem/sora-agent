@@ -20,6 +20,14 @@ Each call is a fresh container: variables don't survive between calls, files
 in the workspace do. Images the code saves (charts) are reported, so the
 dashboard can show them.
 
+Undo. Code can change or delete workspace files without going through
+edit_file, so before each run the workspace is snapshotted (up to
+SNAPSHOT_LIMIT bytes); afterwards every file the code changed or deleted
+gets its previous version in .history/, the same place edit_file uses, and
+undo_change restores it. (Found by the file-edit eval: with only basic file
+tools, the model edited files with Python in the sandbox, and those edits
+couldn't be undone.)
+
 This is sora's own capability (Docker on your Mac, any model). Anthropic's
 server-side code execution is a separate option (SORA_CODE_EXECUTION).
 """
@@ -28,6 +36,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -38,6 +48,20 @@ TIMEOUT = 60
 MAX_OUTPUT = 20_000
 MAX_CODE = 100_000
 PICTURES = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp"}
+HISTORY, KEEP = ".history", 10            # shared with tools/workspace_server.py
+SNAPSHOT_LIMIT = 200 * 1024 * 1024        # bigger workspaces run without the undo snapshot
+
+
+def workspace_files(root: Path) -> dict[str, tuple[int, int]]:
+    """relative path -> (mtime_ns, size), history excluded."""
+    if not root.is_dir():
+        return {}
+    out = {}
+    for p in root.rglob("*"):
+        if p.is_file() and not p.is_symlink() and HISTORY not in p.relative_to(root).parts:
+            st = p.stat()
+            out[str(p.relative_to(root))] = (st.st_mtime_ns, st.st_size)
+    return out
 
 
 def docker_command(workspace: Path, name: str, image: str = IMAGE) -> list[str]:
@@ -94,14 +118,27 @@ class Sandbox:
                             "and tell the user.")
         self.workspace.mkdir(parents=True, exist_ok=True)
         before = pictures(self.workspace)
+        files_before = workspace_files(self.workspace)
+        snapshot = None
+        if sum(size for _, size in files_before.values()) <= SNAPSHOT_LIMIT:
+            snapshot = Path(tempfile.mkdtemp(prefix="sora-snap-"))
+            for rel in files_before:
+                (snapshot / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.workspace / rel, snapshot / rel)
         name = f"sora-sbx-{uuid.uuid4().hex[:10]}"
         try:
-            done = self.run(docker_command(self.workspace, name, self.image), input=code, capture_output=True,
-                            text=True, timeout=self.timeout)
-        except subprocess.TimeoutExpired:
-            self.run(["docker", "kill", name], capture_output=True, text=True, timeout=20)
-            raise ToolError(f"Stopped after {self.timeout} seconds (the time limit). Make the code faster, "
-                            "or split the work into smaller runs.") from None
+            try:
+                done = self.run(docker_command(self.workspace, name, self.image), input=code, capture_output=True,
+                                text=True, timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                self.run(["docker", "kill", name], capture_output=True, text=True, timeout=20)
+                self._keep_versions(snapshot, files_before)
+                raise ToolError(f"Stopped after {self.timeout} seconds (the time limit). Make the code faster, "
+                                "or split the work into smaller runs.") from None
+            touched = self._keep_versions(snapshot, files_before)
+        finally:
+            if snapshot:
+                shutil.rmtree(snapshot, ignore_errors=True)
         after = pictures(self.workspace)
         self.last_pictures = sorted(p for p, t in after.items() if before.get(p) != t)
         parts = [f"exit code {done.returncode}" + (" (out of memory: killed)" if done.returncode == 137 else "")]
@@ -109,11 +146,29 @@ class Sandbox:
             parts.append("stdout:\n" + clip(done.stdout))
         if done.stderr:
             parts.append("stderr:\n" + clip(done.stderr, MAX_OUTPUT // 2))
+        if touched:
+            parts.append("changed or deleted existing files (undo_change can restore them): " + ", ".join(touched))
+        elif snapshot is None and files_before:
+            parts.append("(workspace too big to snapshot: changes made by this run can't be undone)")
         if self.last_pictures:
             parts.append("images saved in the workspace (shown to the user): " + ", ".join(self.last_pictures))
         if not done.stdout and not done.stderr and done.returncode == 0:
             parts.append("(no output: print() what you need to see)")
         return "\n".join(parts)
+
+    def _keep_versions(self, snapshot: Path | None, files_before: dict) -> list[str]:
+        """Previous versions of files the run changed or deleted, into .history/."""
+        if snapshot is None:
+            return []
+        now = workspace_files(self.workspace)
+        touched = sorted(rel for rel, stamp in files_before.items() if now.get(rel) != stamp)
+        for rel in touched:
+            folder = self.workspace / HISTORY / rel
+            folder.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(snapshot / rel, folder / f"{time.time_ns()}")
+            for old in sorted(folder.iterdir())[:-KEEP]:
+                old.unlink()
+        return touched
 
     def tool(self) -> Tool:
         return Tool(
