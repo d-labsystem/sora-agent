@@ -229,3 +229,13 @@ def test_the_judge_sees_what_the_tools_returned():
     assert "more chars]" in evidence and "show_chart" not in evidence          # charts go in visuals
     assert "web_search: python release" in evidence
     assert "{evidence}" in JUDGE_PROMPT and tool_evidence({"spans": []}) == "none"
+
+
+
+def test_reply_checks_ignore_thousands_separators():
+    from ops.evals import case_checks, without_separators
+    turn = {"reply": "Total ₹6,39,781 and 121,013,308 primes; years 2026, 2027 and 1, 2, 3"}
+    checks = case_checks({"reply_contains": ["639781", "121013308"]}, turn, [])
+    assert all(checks.values())
+    assert without_separators("in 2026, 2027") == "in 2026, 2027"        # a list of years stays a list
+    assert without_separators("1, 2, 3") == "1, 2, 3"
