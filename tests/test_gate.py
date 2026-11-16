@@ -1,3 +1,4 @@
+import re
 """The retrieval gate: when it searches, what it searches for, and how it fails."""
 
 import pytest
@@ -33,7 +34,8 @@ def test_rewritten_query_finds_the_fact(store):
     store.add_exchange(sid, "Tell me about Priya", "She is your colleague.")
     result = recall(store, client, "claude-haiku-5-5", sid, "when is her birthday?",
                     lambda kind, **kw: events.append((kind, kw)))
-    assert result.facts == ["Priya's birthday is on 14 March"]
+    assert [f.split(") ", 1)[1] for f in result.facts] == ["Priya's birthday is on 14 March"]
+    assert re.match(r"\(\d{4}-\d\d-\d\d\) ", result.facts[0])                      # recalled facts carry their date
     # the previous exchange was shown to the gate, so it could resolve "her"
     assert "Tell me about Priya" in client.small_requests[0]["messages"][0]["content"]
     assert client.small_requests[0]["output_config"]["format"]["type"] == "json_schema"
@@ -55,7 +57,7 @@ def test_failure_fails_open(store):
     result = recall(store, client, "m", sid, "morning meetings",
                     lambda kind, **kw: events.append((kind, kw)))
     assert result.failed and result.retrieve and not result.correction
-    assert result.facts == ["Alex prefers morning meetings"]
+    assert [f.split(") ", 1)[1] for f in result.facts] == ["Alex prefers morning meetings"]
     assert events[1][0] == "llm" and events[1][1]["ok"] is False
 
 

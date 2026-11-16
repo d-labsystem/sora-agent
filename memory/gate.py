@@ -66,6 +66,7 @@ class GateResult:
     correction: bool
     reason: str
     complex: bool = False          # several steps: the harness asks for a plan first
+    excerpts: list[str] = field(default_factory=list)   # words actually said in past conversations
     facts: list[str] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
     failed: bool = False
@@ -94,14 +95,18 @@ def decide(client, model: str, message: str, last: dict | None, notify=None) -> 
 
 
 def recall(store: MemoryStore, client, model: str, session_id: str, message: str,
-           notify=None, top_facts: int = 5, top_episodes: int = 3) -> GateResult:
+           notify=None, top_facts: int = 5, top_episodes: int = 3, top_excerpts: int = 4) -> GateResult:
     """Run the gate, then search memory if it said so. Emits a "gate" span."""
     result = decide(client, model, message, store.last_exchange(session_id), notify)
     if result.retrieve:
-        result.facts = store.search_facts(result.query, top_facts)
+        result.facts = store.search_facts(result.query, top_facts, dated=True)
         result.episodes = store.search_episodes(result.query, top_episodes)
+        # Summaries lose details, and consolidation keeps facts about the user, not what sora
+        # said; excerpts of the conversations themselves fill both gaps (this session's own
+        # messages are already in the history window).
+        result.excerpts = store.search_messages(result.query, top_excerpts, exclude_session=session_id)
     if notify:
         notify("gate", name="memory recall", retrieve=result.retrieve, query=result.query,
                correction=result.correction, complex=result.complex, reason=result.reason, failed=result.failed,
-               facts=result.facts, episodes=result.episodes)
+               facts=result.facts, episodes=result.episodes, excerpts=result.excerpts)
     return result

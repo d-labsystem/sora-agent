@@ -1,3 +1,4 @@
+import re
 """Built-in tools, called the way the model calls them: through the registry."""
 
 import pytest
@@ -26,7 +27,7 @@ def test_all_tools_registered_with_valid_schemas(setup):
     registry, _, _ = setup
     schemas = registry.schemas()
     assert {s["name"] for s in schemas} == {
-        "remember", "search_memory", "forget", "current_time", "load_skill", "save_skill"}
+        "remember", "search_memory", "search_conversations", "forget", "current_time", "load_skill", "save_skill"}
     assert all(s["input_schema"]["type"] == "object" for s in schemas)
 
 
@@ -36,7 +37,7 @@ def test_remember_search_forget(setup):
     assert run(registry, "remember", fact="Priya lives in Pune")[0].startswith("Already known")
     assert store.list_facts()[0]["source"] == "remember:turn42"
     output, error = run(registry, "search_memory", query="Pune")
-    assert not error and "- Priya lives in Pune" in output
+    assert not error and re.search(r"- \(\d{4}-\d\d-\d\d\) Priya lives in Pune", output)   # dated
     assert run(registry, "forget", text="Pune")[0].startswith("Forgot 1")
     assert "Nothing in memory" in run(registry, "search_memory", query="Pune")[0]
 

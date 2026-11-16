@@ -223,3 +223,27 @@ def test_real_model_dedupe_keeps_updates(tmp_path):
     assert s.add_fact("Kiran (the user's teammate) has a birthday on 3 December.")
     assert not s.add_fact("The user's teammate Kiran's birthday is on 3 December.")   # live-session duplicate
     assert s.add_fact("The user's teammate Kiran's birthday is on 5 December.")       # an update survives
+
+
+def test_past_messages_are_searchable_with_dates_and_roles(tmp_path):
+    s = MemoryStore(tmp_path / "m.db")
+    old = s.ensure_session(None, "venues")
+    s.add_exchange(old, "Where can I see a show in Portland?",
+                   "Try the Crystal Ballroom, or for something smaller, Revolution Hall.", created_at="2023-05-20 02:21:00")
+    now = s.ensure_session(None, "today")
+    s.add_exchange(now, "Which venue did you recommend?", "Let me check.")
+    found = s.search_messages("venue recommended Revolution Hall", exclude_session=now)
+    assert found == ["(2023-05-20) assistant: Try the Crystal Ballroom, or for something smaller, Revolution Hall."]
+    assert s.search_messages("the a is") == []                               # filler words only
+    assert MemoryStore(tmp_path / "m.db").search_messages("Crystal Ballroom")     # survives reopening
+
+
+def test_messages_saved_before_the_index_are_indexed_once(tmp_path):
+    import sqlite3
+    s = MemoryStore(tmp_path / "m.db")
+    sid = s.ensure_session(None, "x")
+    s.add_exchange(sid, "my dentist is Dr Mehta", "Noted.")
+    s.conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('delete-all')")   # as if from an older version
+    s.conn.commit()
+    assert s.search_messages("Mehta") == []
+    assert MemoryStore(tmp_path / "m.db").search_messages("Mehta")[0].endswith("user: my dentist is Dr Mehta")

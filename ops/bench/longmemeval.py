@@ -98,7 +98,7 @@ def ingest(agent, row: dict, notify=None) -> dict:
         pairs = exchanges(session)
         sid = store.ensure_session(None, pairs[0][0] if pairs else "session")
         for user, reply in pairs:
-            store.add_exchange(sid, user, reply)
+            store.add_exchange(sid, user, reply, created_at=at)
             counts["exchanges"] += 1
             if consolidate(store, agent.small, agent.small_id, sid, notify, every=every, at=at):
                 counts["consolidations"] += 1

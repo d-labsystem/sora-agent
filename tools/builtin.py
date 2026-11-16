@@ -54,7 +54,7 @@ def builtin_tools(store: MemoryStore, skills: SkillLibrary, context: TurnContext
         return f"Remembered: {fact}"
 
     def search_memory(query: str) -> str:
-        facts = store.search_facts(query, 8)
+        facts = store.search_facts(query, 8, dated=True)
         episodes = store.search_episodes(query, 5)
         if not facts and not episodes:
             return "Nothing in memory matches. Try other words, or ask the user."
@@ -64,6 +64,13 @@ def builtin_tools(store: MemoryStore, skills: SkillLibrary, context: TurnContext
         if episodes:
             parts.append("Past conversations:\n" + "\n".join(f"- {e}" for e in episodes))
         return "\n\n".join(parts)
+
+    def search_conversations(query: str) -> str:
+        found = store.search_messages(query, 8, exclude_session=context.session_id, width=64)
+        if not found:
+            return "No past message matches. Try other words (names, places, distinctive terms)."
+        return "Excerpts from past conversations (\"assistant\" is you), best match first:\n" + \
+            "\n".join(f"- {e}" for e in found)
 
     def forget(text: str) -> str:
         if len(text.strip()) < 3:
@@ -101,6 +108,11 @@ def builtin_tools(store: MemoryStore, skills: SkillLibrary, context: TurnContext
              "something from before and the memory already in your prompt doesn't cover it. "
              "Search with names and topics, not whole sentences.",
              _schema({"query": {"type": "string"}}), search_memory),
+        Tool("search_conversations",
+             "Search the words actually said in past conversations, the user's and yours, for details a "
+             "summary would drop: what you recommended, an exact name, number or title. Use distinctive "
+             "words (names, places, titles), not whole sentences.",
+             _schema({"query": {"type": "string"}}), search_conversations),
         Tool("forget",
              "Delete saved facts that contain the given text. Use only when the user asks you to "
              "forget something, or a fact is now wrong (then remember the new one).",

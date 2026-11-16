@@ -189,8 +189,11 @@ class MemoryBackend(ABC):
         self._changed()
         return True
 
-    def search_facts(self, query: str, top_k: int = 5) -> list[str]:
-        return [r["text"] for r in self._search("fact", query, top_k)]
+    def search_facts(self, query: str, top_k: int = 5, dated: bool = False) -> list[str]:
+        """`dated` prefixes each fact with the day it was learned: without it an update and the
+        fact it replaced look like a contradiction (LongMemEval: 4 of 7 knowledge updates lost)."""
+        return [f"({r['created_at'][:10]}) {r['text']}" if dated else r["text"]
+                for r in self._search("fact", query, top_k)]
 
     def forget(self, text: str) -> int:
         """Delete facts containing `text` (case-insensitive). Returns how many."""

@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS vectors (
     model TEXT NOT NULL,               -- vectors from different models don't compare
     vector BLOB NOT NULL,              -- float32, length-normalised
     PRIMARY KEY (kind, row));
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content, content='messages', content_rowid='id', tokenize='porter');
+-- Kept in step by the database itself: no code path can forget to index a message.
+CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
 """
 
 TITLE_CHARS = 60
@@ -78,9 +87,20 @@ class MemoryStore:
             if column not in have:
                 self.conn.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
         self.conn.commit()
+        self._index_old_messages()
         # Facts and episodes: SQLite in this same file unless another backend
         # (pgvector, langgraph) is given. See memory/backends/.
         self.semantic: MemoryBackend = backend or SQLiteMemory(self.conn, embedder, min_similarity)
+
+    def _index_old_messages(self) -> None:
+        """Messages saved before the index existed get indexed once."""
+        # Not count(*) on messages_fts: for an external-content index that reads the messages
+        # table and always equals the total. The docsize shadow table holds one row per indexed message.
+        indexed = self.conn.execute("SELECT count(*) FROM messages_fts_docsize").fetchone()[0]
+        total = self.conn.execute("SELECT count(*) FROM messages").fetchone()[0]
+        if total and indexed < total:
+            self.conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')")
+            self.conn.commit()
 
     @property
     def embedder(self):
@@ -110,16 +130,16 @@ class MemoryStore:
 
     def add_exchange(self, session_id: str, user_message: str, reply: str,
                      turn_id: str | None = None, actions: str | None = None,
-                     visuals: list[dict] | None = None) -> None:
+                     visuals: list[dict] | None = None, created_at: str | None = None) -> None:
         """`actions` is a short note of the tools the reply used. It is kept
         apart from the reply, so the chat shows clean text, and added back
         when the model reads history (see history())."""
         self.conn.executemany(
-            "INSERT INTO messages (session_id, role, content, turn_id, actions, visuals) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [(session_id, "user", user_message, turn_id, None, None),
+            "INSERT INTO messages (session_id, role, content, turn_id, actions, visuals, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))",
+            [(session_id, "user", user_message, turn_id, None, None, created_at),
              (session_id, "assistant", reply or "(no reply)", turn_id, actions,
-              json.dumps(visuals) if visuals else None)])
+              json.dumps(visuals) if visuals else None, created_at)])
         self.conn.execute("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?",
                           (session_id,))
         self.conn.commit()
@@ -177,8 +197,27 @@ class MemoryStore:
     def add_fact(self, content: str, source: str = "tool", created_at: str | None = None) -> bool:
         return self.semantic.add_fact(content, source, created_at)
 
-    def search_facts(self, query: str, top_k: int = 5) -> list[str]:
-        return self.semantic.search_facts(query, top_k)
+    def search_facts(self, query: str, top_k: int = 5, dated: bool = False) -> list[str]:
+        return self.semantic.search_facts(query, top_k, dated)
+
+    # ---- past conversations, word for word
+
+    def search_messages(self, query: str, top_k: int = 5, exclude_session: str | None = None,
+                        width: int = 48) -> list[str]:
+        """Excerpts of past messages (yours and sora's) matching the query's real
+        words, best first: '(2023-05-20) assistant: …the excerpt…'. Facts and
+        episodes are summaries; this is what was actually said, which is how
+        sora can answer "what did you recommend last time?"."""
+        words = content_words(query)
+        if not words:
+            return []
+        rows = self.conn.execute(
+            "SELECT m.role, m.created_at, snippet(messages_fts, 0, '', '', '…', ?) AS excerpt "
+            "FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid "
+            "WHERE messages_fts MATCH ? AND (? IS NULL OR m.session_id != ?) "
+            "ORDER BY bm25(messages_fts) LIMIT ?",
+            (width, " OR ".join(f'"{w}"' for w in words), exclude_session, exclude_session, top_k)).fetchall()
+        return [f"({r['created_at'][:10]}) {r['role']}: {' '.join(r['excerpt'].split())}" for r in rows]
 
     def list_facts(self) -> list[dict]:
         return self.semantic.list_facts()

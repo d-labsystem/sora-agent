@@ -1,3 +1,4 @@
+import re
 """The whole turn, end to end, with a scripted model: every part wired together."""
 
 import pytest
@@ -50,7 +51,7 @@ def test_full_turn_with_memory_tools_and_trace(tmp_path):
                               "within_budget": True}
     # memory recall reached the system prompt as labelled data
     system = system_text(client.requests[0]["system"])
-    assert "## Memory" in system and "- Aryan lives in Pune" in system
+    assert "## Memory" in system and re.search(r"- \(\d{4}-\d\d-\d\d\) Aryan lives in Pune", system)   # dated
     assert "## Skills" in system and "research-brief" in system
     # the tool ran and was traced with provenance
     assert any("masala chai" in f["content"] and f["source"] == f"remember:{turn['id']}"
