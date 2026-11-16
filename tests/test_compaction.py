@@ -114,7 +114,8 @@ def test_budget_cap_stops_tools_and_answers_with_what_it_has():
     assert result.budget_reached and not result.limit_reached
     assert result.reply == "Partial: only a." and result.iterations == 2
     final = client.requests[2]
-    assert final["tool_choice"] == {"type": "none"} and final["system"][-1]["text"] == BUDGET_NOTE
+    assert final["tool_choice"] == {"type": "none"} and final["system"] == client.requests[0]["system"]
+    assert final["messages"][-1]["content"][-1] == {"type": "text", "text": BUDGET_NOTE}
 
 
 def test_other_providers_compact_with_their_own_summary():

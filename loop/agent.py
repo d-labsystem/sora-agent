@@ -120,17 +120,28 @@ def _compact(provider, model, system, messages, schemas, effort, task, result, n
     return ok
 
 
+def _append_note(messages: list, note: str) -> None:
+    """Add a note after everything already sent: as a text block after the
+    last user message's tool results, or as a new user message."""
+    last = messages[-1] if messages else None
+    if last and last["role"] == "user" and isinstance(last["content"], list):
+        last["content"].append({"type": "text", "text": note})
+    else:
+        messages.append({"role": "user", "content": note})
+
+
 def run_loop(provider, model: str, system: System, messages: list, tools: ToolRegistry,
              notify: Notify, effort: str = "medium", max_iterations: int = 10,
              compact_at: int = 0,
-             budget_usd: float = 0.0, plan=None) -> LoopResult:
+             budget_usd: float = 0.0, plan=None, extra_spent=None) -> LoopResult:
     """Run one turn. `provider` is a loop.providers Provider (or a bare
     Anthropic client). `messages` is appended to, except that compaction
     replaces it with a summary when the context passes `compact_at` tokens
     (0 = never). `budget_usd` (0 = none) stops tool use once the turn has
     cost that much, then answers from what it has. `plan` (tools/planner.py)
     is this turn's checklist: finishing with steps still open sends the model
-    back once to close them."""
+    back once to close them. `extra_spent()` adds spending made on the loop's
+    behalf outside it (parallel helpers) to the budget check."""
     provider = as_provider(provider)
     result = LoopResult(model=model)
     schemas = tools.schemas()
@@ -190,7 +201,7 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
         messages.append({"role": "user", "content": tool_results})
 
         # Between steps, with every tool call answered: the two long-task checks.
-        if budget_usd and result.cost_usd >= budget_usd:
+        if budget_usd and result.cost_usd + (extra_spent() if extra_spent else 0.0) >= budget_usd:
             result.budget_reached = True
             break
         size = context_size(step.usage)
@@ -208,10 +219,13 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
     final = result.iterations + 1
     started = time.perf_counter()
     notify("llm_start", name=f"model call {final}")
-    # The note goes after the cached system blocks, so the cache still hits.
-    final_system = (system + [{"type": "text", "text": note}] if isinstance(system, list)
-                    else f"{system}\n\n{note}")
-    step = provider.step(model, final_system, messages, schemas, effort, on_text, final=True)
+    # The note is appended to the conversation, never to the system prompt. With preserved
+    # thinking, every thinking block is bound to the system prompt it was produced under;
+    # editing the system on this last call made the API reject the whole turn (BrowseComp,
+    # 2026-11-16: six long tasks crashed at their dollar cap with "Invalid signature in
+    # thinking block ... the system prompt differs"). Appending changes nothing already sent.
+    _append_note(messages, note)
+    step = provider.step(model, system, messages, schemas, effort, on_text, final=True)
     _record(result, step, notify, final, int((time.perf_counter() - started) * 1000))
     result.reply = step.text
     return result

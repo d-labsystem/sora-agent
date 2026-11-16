@@ -133,3 +133,30 @@ def test_in_the_agent_helper_costs_count_and_the_tool_is_offered(tmp_path):
     assert turn["cost_usd"] == pytest.approx(llm_cost, abs=1e-6) and turn["reply"] == "combined answer"   # stored to 6 places
     bare = Sora(Settings(home=tmp_path / "bare", memory_mirror=False, bare=True), FakeClient([]), connect_mcp=False)
     assert bare.registry.get("delegate") is None
+
+
+
+def test_helpers_share_the_turns_budget(tmp_path):
+    h, client, _ = helpers(tmp_path, answer_by_task())
+    h.reset(None, turn_budget=0.40)
+    h.delegate([{"task": "a"}, {"task": "b"}])
+    assert h._cap == pytest.approx(0.20) and h.spent > 0                 # each gets its share, spending counted
+    h.spent = 0.40
+    with pytest.raises(ToolError, match="budget is used up"):
+        h.delegate([{"task": "c"}])
+    h.reset(None, 0.0)                                                    # normal turns: the per-helper cap only
+    h.delegate([{"task": "d"}])
+    assert h._cap == h.budget_usd
+
+
+def test_the_main_budget_check_counts_helper_spending():
+    from fake import FakeClient, message, text, tool_use
+    from loop.agent import run_loop
+    from tools.registry import Tool, ToolRegistry
+    reg = ToolRegistry()
+    reg.register(Tool("t", "d", {"type": "object", "properties": {}}, lambda: "ok"))
+    client = FakeClient(lambda req: message(text("final")) if req.get("tool_choice")
+                        else message(tool_use("t", {}), stop_reason="tool_use"))
+    result = run_loop(client, "claude-opus-5-5", "s", [{"role": "user", "content": "x"}], reg, lambda *a, **k: None,
+                      max_iterations=10, budget_usd=1.0, extra_spent=lambda: 5.0)   # helpers already spent $5
+    assert result.budget_reached and result.iterations == 1

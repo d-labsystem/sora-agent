@@ -130,7 +130,9 @@ def test_caching_is_requested_and_priced():
     assert llm["cache_read_tokens"] == 8000
 
 
-def test_limit_note_goes_after_cached_blocks():
+def test_limit_note_is_appended_and_the_system_never_changes():
+    """Preserved thinking binds each thinking block to the system prompt it was made under;
+    editing the system on the final call made the API reject the turn."""
     from loop.agent import LIMIT_NOTE, run_loop
     from tools.registry import Tool, ToolRegistry
     registry = ToolRegistry()
@@ -140,8 +142,11 @@ def test_limit_note_goes_after_cached_blocks():
     system = [{"type": "text", "text": "stable", "cache_control": {"type": "ephemeral"}}]
     run_loop(client, "m", system, [{"role": "user", "content": "x"}], registry,
              lambda *a, **k: None, max_iterations=1)
-    last = client.requests[-1]["system"]
-    assert last[0] == system[0] and last[-1]["text"] == LIMIT_NOTE
+    first, last = client.requests[0], client.requests[-1]
+    assert last["system"] == first["system"] == system                 # byte for byte, every call
+    tail = last["messages"][-1]
+    assert tail["role"] == "user" and tail["content"][0]["type"] == "tool_result"
+    assert tail["content"][-1] == {"type": "text", "text": LIMIT_NOTE}   # after the results, nothing rewritten
 
 
 def test_web_tool_limits():

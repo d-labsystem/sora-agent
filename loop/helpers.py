@@ -24,6 +24,7 @@ the turn's cost includes every helper.
 
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -63,6 +64,12 @@ class Helpers:
         self.provider, self.model, self.registry, self.effort = provider, model, registry, effort
         self.max_steps, self.budget_usd, self.max_parallel = max_steps, budget_usd, max_parallel
         self.notify = None                 # the turn's notify, set by the harness
+        self.turn_budget = 0.0             # the turn's dollar cap (long tasks), set by the harness; 0 = none
+        self.spent = 0.0                   # what helpers spent this turn: the main loop's budget counts it
+        self._lock = threading.Lock()
+
+    def reset(self, notify, turn_budget: float = 0.0) -> None:
+        self.notify, self.turn_budget, self.spent = notify, turn_budget, 0.0
 
     def _tools(self) -> ToolRegistry:
         """The helper's view: the same (permission-gated) tool objects, fewer of them."""
@@ -88,7 +95,9 @@ class Helpers:
             message = task["task"] + (f"\n\nContext from the assistant:\n{task['context']}" if task.get("context") else "")
             result = run_loop(self.provider, self.model, HELPER_SYSTEM, [{"role": "user", "content": message}],
                               self._tools(), notify, effort=self.effort, max_iterations=self.max_steps,
-                              budget_usd=self.budget_usd)
+                              budget_usd=self._cap)
+            with self._lock:
+                self.spent += result.cost_usd
             report = (result.reply or "(the helper returned no report)").strip()
             stopped = (" It stopped at its dollar cap." if result.budget_reached
                        else " It stopped at its step limit." if result.limit_reached else "")
@@ -110,6 +119,12 @@ class Helpers:
             raise ToolError("tasks must be a non-empty list of {task, context}")
         if len(tasks) > self.max_parallel:
             raise ToolError(f"at most {self.max_parallel} tasks at once; group or split the work")
+        # Each helper gets its own cap, but never more than its share of what's left of the
+        # turn's budget: without this, four helpers could spend $2 on a $0.50 long task.
+        left = max(0.0, self.turn_budget - self.spent) if self.turn_budget else 0.0
+        self._cap = min(self.budget_usd, left / len(tasks)) if self.turn_budget else self.budget_usd
+        if self.turn_budget and self._cap < 0.01:
+            raise ToolError("The task's budget is used up; finish with what you have.")
         clean = []
         for i, t in enumerate(tasks, 1):
             if not isinstance(t, dict) or not str(t.get("task", "")).strip():

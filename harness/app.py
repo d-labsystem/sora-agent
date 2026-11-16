@@ -524,7 +524,7 @@ class Sora:
                 self.plan.reset(notify)
                 self.approvals.notify = notify
                 if self.helpers:
-                    self.helpers.notify = notify
+                    self.helpers.reset(notify, s.long_budget_usd if long else 0.0)
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
                        skills=[k.name for k in matched], tool_notes=sorted(tool_notes),
@@ -541,7 +541,8 @@ class Sora:
                                   max_iterations=s.long_iterations if long else s.max_iterations,
                                   compact_at=s.compact_at,
                                   budget_usd=s.long_budget_usd if long else 0.0,
-                                  plan=self.plan if planning else None)
+                                  plan=self.plan if planning else None,
+                                  extra_spent=(lambda: self.helpers.spent) if self.helpers else None)
                 status = ("refused" if result.stop_reason == "refusal"
                           else "budget" if result.budget_reached
                           else "limit" if result.limit_reached else "ok")
