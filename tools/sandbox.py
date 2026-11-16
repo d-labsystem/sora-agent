@@ -43,7 +43,7 @@ from pathlib import Path
 
 from tools.registry import Tool, ToolError
 
-IMAGE = "sora-sandbox:1"
+IMAGE = "sora-sandbox:2"   # 2: python-pptx and python-docx, for decks and documents
 TIMEOUT = 60
 MAX_OUTPUT = 20_000
 MAX_CODE = 100_000
@@ -175,8 +175,9 @@ class Sandbox:
             "run_code",
             "Run Python in a sandbox and get what it prints. Use it for exact arithmetic, statistics, dates, "
             "parsing or transforming files, and charts (matplotlib: save to a .png and it is shown to the "
-            "user). The working folder is the user's workspace: read and write files there. pandas, numpy, "
-            "openpyxl and matplotlib are installed. There is no internet. Each call starts fresh: variables "
+            "user), and documents (python-pptx for PowerPoint, python-docx for Word, openpyxl for Excel). The "
+            "working folder is the user's workspace: a file saved there is the only way it reaches the user. "
+            "pandas, numpy and matplotlib are also installed. There is no internet. Each call starts fresh: variables "
             "don't carry over, so keep what you need in files. print() results; a bare expression shows nothing.",
             {"type": "object", "properties": {"code": {"type": "string"},
                                               "language": {"type": "string", "enum": ["python"]}},

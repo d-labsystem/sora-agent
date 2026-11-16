@@ -1,0 +1,7 @@
+// Files the user asks for must exist in their workspace, not only on the provider's servers.
+// Found 2026-11-16: a deck was "ready" four times but was built in Anthropic's code container and never
+// reached the Mac. These cases pass only if the real file, with the right content, is in the workspace.
+// Run:  uv run main.py eval evals/document-tasks.jsonl --label 'documents'
+{"id": "pptx-deck", "message": "Make me a 4-slide PowerPoint called study-plan.pptx: a title slide, then one slide each for Monday, Wednesday and Friday of a USMLE Step 3 study week. Save it in my workspace.", "expect": {"files": {"study-plan.pptx": ["monday", "wednesday", "friday"]}, "slides": {"study-plan.pptx": 4}, "max_cost_usd": 0.6}}
+{"id": "docx-letter", "message": "Write a short thank-you letter to the NorthBay Health interview panel as a Word document called thank-you.docx in my workspace.", "expect": {"files": {"thank-you.docx": ["northbay", "thank"]}, "max_cost_usd": 0.6}}
+{"id": "xlsx-budget", "message": "Make an Excel file called trip.xlsx with three rows: bus 650, food 400, hotel 1800, and a total row. Save it in my workspace.", "expect": {"files": {"trip.xlsx": ["bus", "hotel", "2850||sum("]}, "max_cost_usd": 0.6}}

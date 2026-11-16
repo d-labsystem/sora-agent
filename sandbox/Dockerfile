@@ -1,5 +1,5 @@
 # sora's code sandbox: where run_code executes model-written Python.
-# Build: uv run main.py sandbox build     (tag sora-sandbox:1)
+# Build: uv run main.py sandbox build     (tag sora-sandbox:2)
 #
 # The image is only half the safety; the other half is how tools/sandbox.py
 # runs it (no network, read-only root, workspace-only mount, limits).
@@ -11,6 +11,8 @@ RUN pip install --no-cache-dir \
         pandas==2.2.3 \
         openpyxl==3.1.5 \
         matplotlib==3.9.2 \
+        python-pptx==1.0.2 \
+        python-docx==1.1.2 \
     && useradd --uid 1000 --create-home --shell /usr/sbin/nologin sandbox
 
 # matplotlib writes a font cache: point it at /tmp, the only writable place

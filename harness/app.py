@@ -285,6 +285,15 @@ def capability_limits(capabilities: dict[str, bool], settings: Settings) -> list
     return lines
 
 
+# Anthropic's web tools come with a code container on its servers. A deck built there
+# (2026-11-16) never reached the user, and the model kept saying it had. The loop now
+# downloads what that code saves to $OUTPUT_DIR (Files API); this tells the model so.
+PROVIDER_CODE_NOTE = ("Code you run with the provider's own tools (bash_code_execution, code_execution) runs "
+                      "on the provider's servers, not the user's computer. A file made there reaches the user "
+                      "only if you save it in $OUTPUT_DIR; the app then copies it into their workspace. For "
+                      "files the user asked for, prefer run_code, which saves straight into the workspace.")
+
+
 # How replies should look on each way in. Goes in the per-turn block, after
 # the cache breakpoint, so chat and WhatsApp turns share the cached prefix.
 CHANNEL_NOTES = {
@@ -346,7 +355,23 @@ def system_text(system: list[dict] | str) -> str:
     return system if isinstance(system, str) else "\n\n".join(b["text"] for b in system)
 
 
-def action_note(tool_calls: list[dict], server_calls: list[dict], limit: int = 8) -> str | None:
+def save_to_workspace(workspace: Path, name: str, data: bytes) -> str:
+    """Write a file server-side code made into the workspace; never over an
+    existing file ("deck.pptx" -> "deck (2).pptx"). Returns the saved name."""
+    name = Path(name).name                       # a bare name: no folders, no "../"
+    if name in ("", ".", ".."):
+        name = "output"
+    workspace.mkdir(parents=True, exist_ok=True)
+    path, n = workspace / name, 2
+    while path.exists():
+        path = workspace / f"{Path(name).stem} ({n}){Path(name).suffix}"
+        n += 1
+    path.write_bytes(data)
+    return path.name
+
+
+def action_note(tool_calls: list[dict], server_calls: list[dict], limit: int = 8,
+                files: list[str] | None = None) -> str | None:
     """A compact record of what a reply did, for the next turns' history.
     Short on purpose: it rides along in every later request of the session."""
     def clip(value, n):
@@ -360,10 +385,18 @@ def action_note(tool_calls: list[dict], server_calls: list[dict], limit: int = 8
         items.append(f"{c['tool']}({args}) -> {status}: {clip(c.get('output', ''), 100)}")
     for c in server_calls[:limit]:
         args = c.get("args") or {}
-        items.append(f"{c['tool']}({clip(args.get('query') or args.get('url') or '', 80)!r})")
+        what = args.get("query") or args.get("url") or args.get("path") or args.get("command") \
+            or args.get("code") or ""
+        if c["tool"] in ("web_search", "web_fetch"):
+            items.append(f"{c['tool']}({clip(what, 80)!r})")
+        else:       # code the provider ran: say where, and what it printed
+            done = f" -> {clip(c['output'], 100)}" if c.get("output") else ""
+            items.append(f"{c['tool']}({clip(what, 80)!r}) [on the provider's servers]{done}")
+    if files:
+        items.append("files saved to the user's workspace: " + ", ".join(files))
     if not items:
         return None
-    more = len(tool_calls) + len(server_calls) - len(items)
+    more = len(tool_calls) + len(server_calls) - len(items) + (1 if files else 0)
     return ("[Recorded by the app, not written by you. Tools used in this reply: "
             + "; ".join(items) + (f"; and {more} more" if more > 0 else "") + "]")
 
@@ -414,6 +447,9 @@ class Sora:
         self.registry = ToolRegistry(self.provider.server_tool_specs(web, settings.code_execution),
                                      server_source=self.provider.name)
         self.limits = capability_limits(self.provider.capabilities, settings)
+        if (not settings.bare and hasattr(self.provider, "download_file")
+                and (settings.web_tools or settings.code_execution)):
+            self.limits.append(PROVIDER_CODE_NOTE)
         if not settings.bare:     # the baseline gets only web and workspace tools
             register_builtins(self.registry, self.store, self.skills, self.context)
         # Actions that reach other people wait for the user's reply (tools/approvals.py).
@@ -557,7 +593,8 @@ class Sora:
                                   compact_at=s.compact_at,
                                   budget_usd=s.long_budget_usd if long else 0.0,
                                   plan=self.plan if planning else None,
-                                  extra_spent=(lambda: self.helpers.spent) if self.helpers else None)
+                                  extra_spent=(lambda: self.helpers.spent) if self.helpers else None,
+                                  save_file=lambda name, data: save_to_workspace(s.home / "workspace", name, data))
                 status = ("refused" if result.stop_reason == "refusal"
                           else "budget" if result.budget_reached
                           else "limit" if result.limit_reached else "ok")
@@ -567,11 +604,18 @@ class Sora:
                 visuals = [{"tool": c["tool"], **c["args"]} for c in result.tool_calls
                            if c["tool"] in VISUAL_TOOLS and not c["is_error"]]
                 self.store.add_exchange(session_id, message, result.reply, turn.id,
-                                        action_note(result.tool_calls, result.server_calls), visuals)
+                                        action_note(result.tool_calls, result.server_calls,
+                                                    files=result.files), visuals)
                 signals = [] if s.bare else detect(len(result.tool_errors), result.limit_reached, found.correction)
                 if signals:
+                    # Provider-side code runs too: with only local tools, the 2026-11-16 deck
+                    # turns were reflected on as "claimed a file without making it" (it had been
+                    # made, on the provider's servers), and four wrong lessons were saved.
+                    server_code = [{"tool": f"{c['tool']} (provider's servers)", "args": c["args"],
+                                    "output": c.get("output", ""), "is_error": False}
+                                   for c in result.server_calls if "output" in c]
                     reflect(self.lessons, self.small, self.small_id, signals, message,
-                            result.reply, result.tool_calls, turn.id,
+                            result.reply, result.tool_calls + server_code, turn.id,
                             previous if found.correction else None, notify=notify)
                 if s.bare:
                     pass                                    # the baseline keeps no memory

@@ -43,6 +43,7 @@ import re
 import sys
 import tempfile
 import uuid
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -52,7 +53,9 @@ from ops.tracing import Tracer, now_iso
 from tools.visuals import VISUAL_TOOLS
 
 EXPECT_KEYS = {
-    "files":              "object: {workspace file: [texts it must contain]} after the case",
+    "files":              "object: {workspace file: [texts it must contain]} after the case "
+                          "(.pptx/.docx/.xlsx are read as their text; \"a||b\" passes on either)",
+    "slides":             "object: {workspace .pptx: number of slides it must have}",
     "files_equal":        "object: {workspace file: exact expected content} (nothing else may change)",
     "plan_closed":        "bool: the last plan had no open steps (all done or blocked)",
     "tools":              "list: each of these tools was called",
@@ -68,6 +71,32 @@ EXPECT_KEYS = {
     "max_cost_usd":       "number: the turn cost at most this",
     "judge_min":          "number 0-1: the LLM judge's score is at least this",
 }
+
+
+OFFICE = (".pptx", ".docx", ".xlsx")
+
+
+def file_text(path: Path) -> str:
+    """A file's text. Office files are zips of XML: their text is what sits
+    between the tags (no python-pptx needed on this side), one part per line."""
+    if path.suffix.lower() not in OFFICE:
+        return path.read_text(encoding="utf-8", errors="replace")
+    try:
+        with zipfile.ZipFile(path) as z:
+            parts = sorted(n for n in z.namelist() if n.endswith(".xml")
+                           and n.startswith(("ppt/slides/", "word/", "xl/sharedStrings", "xl/worksheets/")))
+            return "\n".join(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", z.read(n).decode("utf-8", "replace")))
+                             for n in parts)
+    except zipfile.BadZipFile:
+        return ""                      # named .pptx but not one: it has no slides and no text
+
+
+def slide_count(path: Path) -> int:
+    try:
+        with zipfile.ZipFile(path) as z:
+            return sum(1 for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n))
+    except zipfile.BadZipFile:
+        return 0
 
 
 class Agent(Protocol):
@@ -141,12 +170,18 @@ def case_checks(expect: dict, turn: dict, facts: list[str], workspace: Path | No
         out[f"cost <= ${expect['max_cost_usd']}"] = (turn.get("cost_usd") or 0) <= expect["max_cost_usd"]
     for name, texts in (expect.get("files") or {}).items():
         path = (workspace / name) if workspace else None
-        content = path.read_text(encoding="utf-8", errors="replace").lower() if path and path.is_file() else None
+        content = file_text(path).lower() if path and path.is_file() else None
         if content is not None:
             content = without_separators(content)
         out[f"wrote {name}"] = content is not None
         for text in texts:
-            out[f"{name} has {text!r}"] = content is not None and text.lower() in content
+            # "2850||sum(": either. A spreadsheet total can be a formula, whose value
+            # Excel computes on opening, so it isn't in the file (xlsx-budget, 2026-11-16).
+            out[f"{name} has {text!r}"] = content is not None and any(
+                alt.strip().lower() in content for alt in text.split("||"))
+    for name, want in (expect.get("slides") or {}).items():
+        path = (workspace / name) if workspace else None
+        out[f"{name} has {want} slides"] = bool(path and path.is_file()) and slide_count(path) == want
     for name, want in (expect.get("files_equal") or {}).items():
         path = (workspace / name) if workspace else None
         got = path.read_text(encoding="utf-8", errors="replace") if path and path.is_file() else None

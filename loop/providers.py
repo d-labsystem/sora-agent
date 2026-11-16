@@ -84,6 +84,7 @@ class Step:
     model: str                     # the model that actually answered
     usage: Usage
     server_events: list[tuple[str, dict]] = field(default_factory=list)   # for the trace
+    files: list[str] = field(default_factory=list)   # ids of files server-side code saved for the user
 
 
 CAPABILITIES = ("reasoning_with_tools", "web_search", "web_fetch", "code_execution",
@@ -149,6 +150,16 @@ def _server_results(block) -> dict[str, Any]:
     return out
 
 
+def _output_files(block) -> list[str]:
+    """Ids of the files a server code run saved to $OUTPUT_DIR. They live on
+    the provider's servers until downloaded (download_file); the result block
+    only points at them, like "content": [{"type": "...output", "file_id": "file_…"}]."""
+    items = getattr(getattr(block, "content", None), "content", None)
+    if not isinstance(items, list):
+        return []
+    return [i.file_id for i in items if getattr(i, "file_id", None)]
+
+
 ANTHROPIC_CODE_TOOL = {"type": "code_execution_20260521", "name": "code_execution"}
 
 
@@ -191,12 +202,15 @@ class AnthropicProvider:
                       getattr(u, "cache_read_input_tokens", 0) or 0,
                       getattr(u, "cache_creation_input_tokens", 0) or 0,
                       getattr(getattr(u, "server_tool_use", None), "web_search_requests", 0) or 0)
-        events = []
+        events, files = [], []
         for block in response.content:
             if block.type == "server_tool_use":
                 events.append(("server_tool", {"name": block.name, "input": block.input}))
             elif block.type.endswith("_tool_result") and block.type != "tool_result":
-                events.append(("server_result", {"name": block.type, **_server_results(block)}))
+                found = _output_files(block)
+                files += found
+                events.append(("server_result", {"name": block.type, **_server_results(block),
+                                                 **({"files": found} if found else {})}))
         return Step(
             content=response.content,
             text="".join(b.text for b in response.content if b.type == "text"),
@@ -204,7 +218,12 @@ class AnthropicProvider:
                         if b.type == "tool_use"],
             stop_reason=response.stop_reason,
             model=getattr(response, "model", "") or model,
-            usage=usage, server_events=events)
+            usage=usage, server_events=events, files=files)
+
+    def download_file(self, file_id: str) -> tuple[str, bytes]:
+        """(file name, bytes) of a file server-side code saved (Files API)."""
+        name = self.client.files.retrieve_metadata(file_id).filename
+        return name, self.client.files.download(file_id).read()
 
     def ask_json(self, model, prompt, output_format, max_tokens):
         response = self.client.messages.create(

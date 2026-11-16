@@ -58,7 +58,9 @@ class LoopResult:
     stop_reason: str = ""
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-    server_calls: list[dict[str, Any]] = field(default_factory=list)   # web_search, web_fetch
+    # What the provider ran on its side: web_search, web_fetch, and code (with what it printed).
+    server_calls: list[dict[str, Any]] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)    # files server-side code made, saved to the workspace
     budget_reached: bool = False
     compactions: int = 0
     plan_nudged: bool = False         # tried to finish with plan steps open, and was sent back
@@ -89,8 +91,28 @@ def _record(result: LoopResult, step: Step, notify: Notify, iteration: int, ms: 
            **({"reasoning_tokens": u.reasoning_tokens} if u.reasoning_tokens else {}))
     for kind, data in step.server_events:
         notify(kind, **data)
-        if kind == "server_tool" and data["name"] in ("web_search", "web_fetch"):
+        if kind == "server_tool":
             result.server_calls.append({"tool": data["name"], "args": data["input"]})
+        elif kind == "server_result" and "stdout" in data and result.server_calls:
+            # Code runs on the provider's side too (today's web tools come with a container).
+            # Recording what it printed keeps the history honest: the 2026-11-16 deck was built
+            # four times in that container, but the history listed only the local run_code that
+            # said "no pptx", so each next turn concluded it had never made the file.
+            result.server_calls[-1]["output"] = data["stdout"]
+
+
+def _save_files(provider, step: Step, save_file, result: LoopResult, notify: Notify) -> None:
+    """Bring files that server-side code made into the user's workspace. Without
+    this they stay on the provider's servers, and "I made your deck" is true
+    only there."""
+    for file_id in step.files:
+        try:
+            name, data = provider.download_file(file_id)
+            saved = save_file(name, data)
+            result.files.append(saved)
+            notify("file", name=f"saved {saved}", file_id=file_id, path=saved, bytes=len(data), ok=True)
+        except Exception as exc:
+            notify("file", name="file download failed", file_id=file_id, error=str(exc)[:300], ok=False)
 
 
 def _compact(provider, model, system, messages, schemas, effort, task, result, notify, size) -> bool:
@@ -133,7 +155,7 @@ def _append_note(messages: list, note: str) -> None:
 def run_loop(provider, model: str, system: System, messages: list, tools: ToolRegistry,
              notify: Notify, effort: str = "medium", max_iterations: int = 10,
              compact_at: int = 0,
-             budget_usd: float = 0.0, plan=None, extra_spent=None) -> LoopResult:
+             budget_usd: float = 0.0, plan=None, extra_spent=None, save_file=None) -> LoopResult:
     """Run one turn. `provider` is a loop.providers Provider (or a bare
     Anthropic client). `messages` is appended to, except that compaction
     replaces it with a summary when the context passes `compact_at` tokens
@@ -141,7 +163,9 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
     cost that much, then answers from what it has. `plan` (tools/planner.py)
     is this turn's checklist: finishing with steps still open sends the model
     back once to close them. `extra_spent()` adds spending made on the loop's
-    behalf outside it (parallel helpers) to the budget check."""
+    behalf outside it (parallel helpers) to the budget check. `save_file(name,
+    data) -> saved name` stores files that server-side code made (None: they
+    stay on the provider's servers)."""
     provider = as_provider(provider)
     result = LoopResult(model=model)
     schemas = tools.schemas()
@@ -155,6 +179,8 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
         notify("llm_start", name=f"model call {iteration}")      # live only: "this is running now"
         step = provider.step(model, system, messages, schemas, effort, on_text)
         _record(result, step, notify, iteration, int((time.perf_counter() - started) * 1000))
+        if save_file and step.files:
+            _save_files(provider, step, save_file, result, notify)
         result.stop_reason = step.stop_reason
 
         # Check why it stopped before trusting the content: a tool call cut
@@ -227,5 +253,7 @@ def run_loop(provider, model: str, system: System, messages: list, tools: ToolRe
     _append_note(messages, note)
     step = provider.step(model, system, messages, schemas, effort, on_text, final=True)
     _record(result, step, notify, final, int((time.perf_counter() - started) * 1000))
+    if save_file and step.files:
+        _save_files(provider, step, save_file, result, notify)
     result.reply = step.text
     return result
