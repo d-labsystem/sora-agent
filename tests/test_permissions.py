@@ -15,7 +15,7 @@ def rules(tmp_path, *items):
     path = tmp_path / "permissions.json"
     path.write_text(json.dumps({"rules": list(items)}))
     return Permissions(path, {"workspace__read_file": "read", "workspace__write_file": "local",
-                              "browser__click": "external", "mystery__tool": "unknown"})
+                              "email__send": "external", "mystery__tool": "unknown"})
 
 
 def test_first_matching_rule_wins_with_globs_and_conditions(tmp_path):
@@ -25,7 +25,7 @@ def test_first_matching_rule_wins_with_globs_and_conditions(tmp_path):
               {"tool": "*", "action": "default"})
     assert p.decide("workspace__write_file", {"path": "finance/2026/tax.md"}).describe() == "deny (rule 1: money)"
     assert p.decide("workspace__write_file", {"path": "notes/a.md"}).action == "ask"           # rule 2
-    assert p.decide("browser__click", {}).describe() == "ask (default for its kind: external tool)"
+    assert p.decide("email__send", {}).describe() == "ask (default for its kind: external tool)"
 
 
 @pytest.mark.parametrize("when, args, hit", [
@@ -44,7 +44,7 @@ def test_conditions(tmp_path, when, args, hit):
 
 def test_defaults_by_kind(tmp_path):
     p = rules(tmp_path, {"tool": "*", "action": "default"})
-    assert [p.decide(t, {}).action for t in ("workspace__read_file", "workspace__write_file", "browser__click",
+    assert [p.decide(t, {}).action for t in ("workspace__read_file", "workspace__write_file", "email__send",
                                              "mystery__tool", "never__seen")] == \
         ["allow", "allow", "ask", "ask", "ask"]
     assert p.decide("approve", {}).action == "allow"                 # the gate's own tools are never gated
@@ -86,7 +86,7 @@ def test_mcp_annotations_become_kinds():
 def gate(tmp_path, *items):
     calls, seen = [], []
     registry = ToolRegistry()
-    for name, kind in (("workspace__write_file", "local"), ("browser__click", "external"), ("new__thing", "")):
+    for name, kind in (("workspace__write_file", "local"), ("email__send", "external"), ("new__thing", "")):
         registry.register(Tool(name, "", {"type": "object", "properties": {}},
                                lambda _n=name, **a: calls.append((_n, a)) or "done", kind=kind))
     context = TurnContext("s1", "t1")
@@ -107,17 +107,17 @@ def test_allow_ask_and_deny_through_the_gate(tmp_path):
     assert registry.execute("workspace__write_file", {"path": "a.md"}) == ("done", False)          # local: allow
     out, error = registry.execute("workspace__write_file", {"path": "finance/x.md"})
     assert error and "rule 1: money" in out and "Don't try another way" in out
-    out, error = registry.execute("browser__click", {"selector": "#pay"})                          # external: ask
+    out, error = registry.execute("email__send", {"to": "boss@work.com"})                          # external: ask
     assert not error and out.startswith("NOT DONE YET") and "default for its kind" in out
     out, _ = registry.execute("new__thing", {})                                                   # no kind: ask
     assert out.startswith("NOT DONE YET")
     assert [c[0] for c in calls] == ["workspace__write_file"]
     assert [(d["action"], d["tool"]) for k, d in seen if k == "permission"] == \
-        [("deny", "workspace__write_file"), ("ask", "browser__click"), ("ask", "new__thing")]
-    draft = next(d for d in approvals.drafts.values() if d.tool == "browser__click")
+        [("deny", "workspace__write_file"), ("ask", "email__send"), ("ask", "new__thing")]
+    draft = next(d for d in approvals.drafts.values() if d.tool == "email__send")
     context.turn_id = "t2"                                                                         # the user replied
     assert registry.execute("approve", {"draft_id": draft.id}) == ("done", False)
-    assert calls[-1] == ("browser__click", {"selector": "#pay"})
+    assert calls[-1] == ("email__send", {"to": "boss@work.com"})
 
 
 def test_the_agent_gates_everything_and_reports_a_broken_file(tmp_path):
@@ -144,3 +144,12 @@ def test_cli_lists_and_tests_calls(tmp_path, monkeypatch):
     out = io.StringIO()
     cli.main(["permissions", "test", "gcal__create_event", '{"attendees": ["a@x.com"]}'], create=lambda h: agent, out=out)
     assert "ask (rule 1:" in out.getvalue()
+
+
+def test_browser_calls_decide_their_kind_per_call(tmp_path):
+    p = Permissions(tmp_path / "permissions.json")
+    assert p.decide("browser__click", {"ref": "e3"}).action == "allow"                   # an ordinary click
+    assert p.decide("browser__click", {"ref": "e9", "confirm": True}).action == "ask"    # a commit
+    assert p.decide("browser__type", {"ref": "e2", "text": "hi"}).action == "allow"
+    assert p.decide("browser__type", {"ref": "e2", "text": "hi", "submit": True}).action == "ask"
+    assert p.decide("browser__press", {"key": "Enter", "confirm": True}).action == "ask"

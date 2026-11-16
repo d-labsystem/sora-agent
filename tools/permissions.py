@@ -52,6 +52,14 @@ KINDS = {
     "remember": "local", "forget": "local", "save_skill": "local", "run_code": "local",
 }
 
+# Tools whose kind depends on the call. The browser refuses commits (a "Place order"
+# click, Enter in a form) unless confirm=true, and confirm=true is external: it asks.
+CALL_KINDS = {
+    "browser__click": lambda a: "external" if a.get("confirm") else "read",
+    "browser__press": lambda a: "external" if a.get("confirm") else "read",
+    "browser__type": lambda a: "external" if a.get("submit") or a.get("confirm") else "local",
+}
+
 STARTER = {"rules": [
     {"tool": "gcal__create_event", "when": {"attendees": "nonempty"}, "action": "ask",
      "why": "Google emails an invitation to every attendee, in your name"},
@@ -139,13 +147,15 @@ class Permissions:
             self.rules, self.problem = [], f"{self.path.name if self.path else 'rules'}: {exc}"
             log.error("permissions: %s; failing closed", self.problem)
 
-    def kind(self, tool: str) -> str:
+    def kind(self, tool: str, args: dict | None = None) -> str:
+        if tool in CALL_KINDS:
+            return CALL_KINDS[tool](args or {})
         return self.kinds.get(tool, "unknown")
 
     def decide(self, tool: str, args: dict) -> Decision:
         if tool in CONTROL:
             return Decision("allow", None, "the approval tools themselves")
-        kind = self.kind(tool)
+        kind = self.kind(tool, args)
         if self.problem:               # fail closed
             return Decision("allow" if kind == "read" else "ask", None,
                             f"the rules file is broken ({self.problem}), so only reading runs without asking")

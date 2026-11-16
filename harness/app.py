@@ -51,7 +51,7 @@ from ops.pricing import add_prices, known_price
 from ops.evals import append_case, judge, tool_evidence, trace_to_case, turn_checks
 from ops import otel
 from ops.tracing import Tracer
-from tools import calendar_server, gcal_server, google_auth, notes_server, workspace_server
+from tools import browser_server, calendar_server, gcal_server, google_auth, notes_server, workspace_server
 from tools.approvals import Approvals
 from tools.permissions import Permissions
 from tools.planner import PLAN_NOTE, Plan
@@ -114,6 +114,8 @@ class Settings:
     # gate calls complex too, "off". On short tasks it cost +54% for no gain (complex-tasks eval).
     planner: str = "long"
     sandbox: str = "auto"                   # run_code in Docker (tools/sandbox.py): auto | on | off
+    browser: bool = False                   # a real browser (tools/browser_server.py), sora's own profile
+    browser_engine: str = "auto"            # auto | chrome | chromium
     # The bare-model baseline for benchmarks: the same model, web and workspace tools and
     # attachments, but none of sora's harness (no memory, gate, skills, lessons, planner,
     # persona). sora's score minus this one is what the harness adds.
@@ -186,6 +188,8 @@ def load_settings(home: Path | str | None = None) -> Settings:
         notes=_flag("SORA_NOTES", d.notes),
         calendar=_flag("SORA_CALENDAR", d.calendar),
         sandbox=os.getenv("SORA_SANDBOX", d.sandbox).strip().lower(),
+        browser=_flag("SORA_BROWSER", d.browser),
+        browser_engine=os.getenv("SORA_BROWSER_ENGINE", d.browser_engine).strip().lower(),
         planner={"1": "always", "true": "always", "0": "off", "false": "off"}.get(
             os.getenv("SORA_PLANNER", d.planner).strip().lower(),
             os.getenv("SORA_PLANNER", d.planner).strip().lower()),
@@ -422,6 +426,8 @@ class Sora:
             config["workspace"] = workspace_server.config(home, basic=os.getenv("SORA_WORKSPACE_TOOLS") == "basic")
         if self.settings.notes and "notes" not in config:
             config["notes"] = notes_server.config()
+        if self.settings.browser and not self.settings.bare and "browser" not in config:
+            config["browser"] = browser_server.config(home, self.settings.browser_engine)
         if self.settings.calendar and "calendar" not in config:
             config["calendar"] = calendar_server.config()
         if self.calendar_on() and "gcal" not in config:

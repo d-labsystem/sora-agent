@@ -230,6 +230,38 @@ def format_status(status: dict) -> str:
     return "\n".join(rows)
 
 
+def browser_command(args, out: IO[str]) -> int:
+    import asyncio
+    from harness.app import load_settings
+    from tools import browser_server
+    settings = load_settings(args.home)
+    if args.action == "login":
+        if not args.url:
+            out.write("usage: browser login https://site.example\n")
+            return 1
+        out.write("A browser window opens on sora's own profile (not your Chrome profile). Sign in there, "
+                  "then close the window; sora will reuse that sign-in.\n")
+        out.flush()
+        asyncio.run(browser_server.login(settings.home, args.url, settings.browser_engine))
+        out.write("Saved. Close any other windows of that browser before sora uses it.\n")
+        return 0
+
+    async def check():
+        b = browser_server.Browser(settings.home, settings.browser_engine)
+        try:
+            await b.start()
+            return f"browser OK: {b.context.browser.version if b.context.browser else 'Chromium'} " \
+                   f"(engine {settings.browser_engine}), profile {settings.home / 'browser' / 'profile'}"
+        finally:
+            await b.stop()
+    try:
+        out.write(asyncio.run(check()) + "\n")
+        return 0
+    except Exception as exc:
+        out.write(f"browser can't start: {exc}\n")
+        return 1
+
+
 def permissions_command(agent, args, out: IO[str]) -> int:
     """Rules apply to the live tool list, MCP tools included, so this builds the agent."""
     import json
@@ -419,6 +451,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     prm.add_argument("action", nargs="?", default="list", choices=["list", "test"])
     prm.add_argument("tool", nargs="?")
     prm.add_argument("args", nargs="?", default="{}", help="the call's arguments as JSON")
+    brw = sub.add_parser("browser", help="sign in to a site in sora's browser, or check the browser starts")
+    brw.add_argument("action", choices=["login", "check"])
+    brw.add_argument("url", nargs="?")
     sbx = sub.add_parser("sandbox", help="build the code sandbox image, or check it works")
     sbx.add_argument("action", choices=["build", "check"])
     cal = sub.add_parser("calendar", help="allow sora to use the Mac's Calendar, and list what it sees")
@@ -472,6 +507,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "memory":     # works on the stores directly; no agent, no model calls
         return memory_command(args, out)
+
+    if command == "browser":     # a visible window on sora's own profile; the agent isn't needed
+        return browser_command(args, out)
 
     if command == "sandbox":
         from tools import sandbox
