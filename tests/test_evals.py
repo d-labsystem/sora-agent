@@ -213,3 +213,19 @@ def test_file_checks_ignore_thousands_separators(tmp_path):
     checks = case_checks({"files": {"budget.md": ["288000", "1550"], "missing.md": []}}, {"reply": ""}, [], tmp_path)
     assert checks == {"wrote budget.md": True, "budget.md has '288000'": True, "budget.md has '1550'": True,
                       "wrote missing.md": False}
+
+
+
+def test_the_judge_sees_what_the_tools_returned():
+    from ops.evals import JUDGE_PROMPT, tool_evidence
+    turn = {"spans": [
+        {"kind": "tool", "name": "workspace__read_file", "data": {"args": {"path": "plan-b.md"},
+                                                                  "output": "Risk: the API lacks bulk export." + "x" * 3000}},
+        {"kind": "tool", "name": "show_chart", "data": {"args": {"title": "t"}, "output": "shown"}},
+        {"kind": "server_tool", "name": "web_search", "data": {"input": {"query": "python release"}}},
+        {"kind": "llm", "name": "model call 1", "data": {}}]}
+    evidence = tool_evidence(turn)
+    assert 'workspace__read_file({"path": "plan-b.md"}) ->\nRisk: the API lacks bulk export.' in evidence
+    assert "more chars]" in evidence and "show_chart" not in evidence          # charts go in visuals
+    assert "web_search: python release" in evidence
+    assert "{evidence}" in JUDGE_PROMPT and tool_evidence({"spans": []}) == "none"

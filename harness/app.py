@@ -47,7 +47,7 @@ from memory.skills import Skill, SkillLibrary
 from memory import mirror
 from memory.backends import open_memory
 from ops.pricing import add_prices, known_price
-from ops.evals import append_case, judge, trace_to_case, turn_checks
+from ops.evals import append_case, judge, tool_evidence, trace_to_case, turn_checks
 from ops import otel
 from ops.tracing import Tracer
 from tools import calendar_server, gcal_server, google_auth, notes_server, workspace_server
@@ -103,7 +103,9 @@ class Settings:
     workspace: bool = True                  # the bundled workspace MCP server
     notes: bool = False                     # Apple Notes (tools/notes_server.py); macOS asks once
     calendar: bool = False                  # the Mac's Calendar app (tools/calendar_server.py)
-    planner: bool = True                    # plan + completion check on multi-step requests
+    # Plan + completion check: "long" = long tasks only (default), "always" = any request the
+    # gate calls complex too, "off". On short tasks it cost +54% for no gain (complex-tasks eval).
+    planner: str = "long"
     google_calendar: str = ""               # "" = on once signed in (google login); "1" / "0" to force
     auto_judge: bool = False                # judge every chat turn (costs a little)
     port: int = 8765
@@ -171,7 +173,9 @@ def load_settings(home: Path | str | None = None) -> Settings:
         workspace=_flag("SORA_WORKSPACE", d.workspace),
         notes=_flag("SORA_NOTES", d.notes),
         calendar=_flag("SORA_CALENDAR", d.calendar),
-        planner=_flag("SORA_PLANNER", d.planner),
+        planner={"1": "always", "true": "always", "0": "off", "false": "off"}.get(
+            os.getenv("SORA_PLANNER", d.planner).strip().lower(),
+            os.getenv("SORA_PLANNER", d.planner).strip().lower()),
         google_calendar=os.getenv("SORA_GOOGLE_CALENDAR", d.google_calendar).strip(),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         port=int(os.getenv("SORA_PORT", d.port)),
@@ -440,11 +444,11 @@ class Sora:
                 matched = self.skills.match(message)
                 tool_names = [t["name"] for t in self.registry.describe()]
                 tool_notes = self.lessons.tool_notes(tool_names)
+                planning = (long and s.planner in ("long", "always")) or (found.complex and s.planner == "always")
                 system = build_system(self.soul_path.read_text(encoding="utf-8"),
                                       datetime.now().astimezone(), self.skills.catalog(),
                                       matched, lessons, found, self.limits, channel=source,
-                                      tool_notes=tool_notes,
-                                      planning=s.planner and (found.complex or long))
+                                      tool_notes=tool_notes, planning=planning)
                 self.plan.reset(notify)
                 notify("context", name="prompt context", facts=len(found.facts),
                        episodes=len(found.episodes), lessons=lessons,
@@ -459,7 +463,7 @@ class Sora:
                                   max_iterations=s.long_iterations if long else s.max_iterations,
                                   compact_at=s.compact_at,
                                   budget_usd=s.long_budget_usd if long else 0.0,
-                                  plan=self.plan if s.planner else None)
+                                  plan=self.plan if planning else None)
                 status = ("refused" if result.stop_reason == "refusal"
                           else "budget" if result.budget_reached
                           else "limit" if result.limit_reached else "ok")
@@ -520,7 +524,7 @@ class Sora:
         tools = sorted({sp["name"] for sp in (t or {}).get("spans", [])
                         if sp["kind"] in ("tool", "server_tool")})
         verdict = judge(self.small, self.small_id, message, reply, tools=tools,
-                        notify=notify)
+                        notify=notify, evidence=tool_evidence(t or {}))
         self.tracer.set_judge(turn_id, verdict["score"], verdict["reason"])
         return verdict
 

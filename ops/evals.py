@@ -49,6 +49,7 @@ from typing import Any, Protocol
 
 from loop.llm import ask_json, schema
 from ops.tracing import Tracer, now_iso
+from tools.visuals import VISUAL_TOOLS
 
 EXPECT_KEYS = {
     "files":              "object: {workspace file: [texts it must contain]} after the case",
@@ -168,6 +169,10 @@ User message:
 
 Tools used: {tools}
 
+What those tools returned (the assistant read this; a detail in the reply that
+appears here is supported by evidence, not invented):
+{evidence}
+
 Visuals shown to the user next to the reply (charts, tables and diagrams
 render beside the text, so a reply may point to them instead of repeating them):
 {visuals}
@@ -209,12 +214,32 @@ def visual_summary(turn: dict, max_rows: int = 12) -> str:
     return "\n".join(lines) or "none"
 
 
+def tool_evidence(turn: dict, per_call: int = 1500, total: int = 12000) -> str:
+    """What each tool returned in this turn, clipped, so the judge can check
+    the reply against the same data the assistant saw. Without it, facts read
+    from a file look "unverified" and get marked down (complex-tasks eval,
+    2026-11-16: three correct replies failed that way)."""
+    lines = []
+    for span in turn.get("spans", []):
+        data = span.get("data") or {}
+        if span["kind"] == "tool" and span["name"] not in VISUAL_TOOLS:
+            args = json.dumps(data.get("args", {}), ensure_ascii=False)[:300]
+            output = str(data.get("output", ""))
+            clipped = output[:per_call] + (f" …[{len(output) - per_call} more chars]" if len(output) > per_call else "")
+            lines.append(f"- {span['name']}({args}) ->\n{clipped}")
+        elif span["kind"] == "server_tool":
+            what = (data.get("input") or {}).get("query") or (data.get("input") or {}).get("url") or ""
+            lines.append(f"- {span['name']}: {what} (results not recorded)")
+    text = "\n".join(lines)
+    return (text[:total] + "\n…[more tool output not shown]") if len(text) > total else (text or "none")
+
+
 def judge(client, model: str, message: str, reply: str, criteria: str | None = None,
-          tools: list[str] | None = None, notify=None, visuals: str = "none") -> dict:
+          tools: list[str] | None = None, notify=None, visuals: str = "none", evidence: str = "none") -> dict:
     """Score 0-1 (from a 1-5 grade) with a reason. Raises on failure."""
     answer = ask_json(client, model, JUDGE_PROMPT.format(
         criteria=criteria or DEFAULT_CRITERIA, message=message[:4000],
-        tools=", ".join(tools or []) or "none", visuals=visuals[:4000],
+        tools=", ".join(tools or []) or "none", visuals=visuals[:4000], evidence=evidence,
         reply=(reply or "(no reply)")[:8000]),
         JUDGE_FORMAT, notify, name="judge", max_tokens=4096)   # long replies get long reasons
     return {"score": (answer["score"] - 1) / 4, "grade": answer["score"], "reason": answer["reason"]}
@@ -308,7 +333,7 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
             if "judge_min" in case.get("expect", {}):
                 verdict = judge(client, judge_model, turn["message"], turn.get("reply") or "",
                                 case.get("criteria"), sorted(_called(turn)),
-                                visuals=visual_summary(turn))
+                                visuals=visual_summary(turn), evidence=tool_evidence(turn))
                 tracer.set_judge(turn["id"], verdict["score"], verdict["reason"])
                 checks[f"judge >= {case['expect']['judge_min']}"] = \
                     verdict["score"] >= case["expect"]["judge_min"]
@@ -365,7 +390,8 @@ def rejudge(run_id: str, cases: list[dict], tracer: Tracer, client, judge_model:
         old = (result.get("judge") or {}).get("grade")
         try:
             verdict = judge(client, judge_model, turn["message"], turn.get("reply") or "",
-                            case.get("criteria"), sorted(_called(turn)), visuals=visual_summary(turn))
+                            case.get("criteria"), sorted(_called(turn)), visuals=visual_summary(turn),
+                            evidence=tool_evidence(turn))
         except Exception as exc:          # one failed grade shouldn't lose the others
             out.append({"id": result["id"], "old": old, "new": None, "reason": f"judge failed: {exc}"})
             continue

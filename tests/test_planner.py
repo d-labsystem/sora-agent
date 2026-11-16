@@ -97,10 +97,10 @@ def test_compaction_keeps_the_checklist(monkeypatch):
 
 # ---- in the agent: only complex turns are asked to plan, and the cache prefix never changes
 
-def agent_with(tmp_path, gate, script):
+def agent_with(tmp_path, gate, script, planner="always"):
     from harness.app import Settings, Sora
     client = FakeClient(script, small=gate)
-    return Sora(Settings(home=tmp_path, memory_mirror=False), client, connect_mcp=False), client
+    return Sora(Settings(home=tmp_path, memory_mirror=False, planner=planner), client, connect_mcp=False), client
 
 
 def test_complex_turns_are_asked_to_plan_and_simple_ones_are_not(tmp_path):
@@ -118,3 +118,27 @@ def test_long_tasks_always_plan(tmp_path):
     agent, client = agent_with(tmp_path, GATE_SIMPLE, [message(text("ok"))])
     agent.respond("go", long=True)
     assert PLAN_NOTE in client.requests[0]["system"][1]["text"]
+
+
+def test_the_default_plans_only_long_tasks(tmp_path):
+    agent, client = agent_with(tmp_path, GATE_COMPLEX, [message(text("a")), message(text("b"))], planner="long")
+    agent.respond("research three laptops and save a note")                    # complex, but short
+    agent.respond("research three laptops and save a note", long=True)
+    assert PLAN_NOTE not in client.requests[0]["system"][1]["text"]
+    assert PLAN_NOTE in client.requests[1]["system"][1]["text"]
+
+
+def test_planner_off_never_plans(tmp_path):
+    agent, client = agent_with(tmp_path, GATE_COMPLEX, [message(text("a"))], planner="off")
+    agent.respond("go", long=True)
+    assert PLAN_NOTE not in client.requests[0]["system"][1]["text"]
+
+
+def test_old_on_off_values_still_work(tmp_path, monkeypatch):
+    from harness.app import load_settings
+    monkeypatch.setenv("SORA_PLANNER", "1")
+    assert load_settings(tmp_path).planner == "always"
+    monkeypatch.setenv("SORA_PLANNER", "0")
+    assert load_settings(tmp_path).planner == "off"
+    monkeypatch.delenv("SORA_PLANNER")
+    assert load_settings(tmp_path).planner == "long"
