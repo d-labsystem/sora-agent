@@ -565,7 +565,7 @@ class Sora:
             session_id = self.store.ensure_session(session_id, message)
             previous = self.store.last_exchange(session_id)
             turn = self.tracer.start(message, session_id, source, s.model, eval_run, listener)
-            self.context.session_id, self.context.turn_id = session_id, turn.id
+            self.context.session_id, self.context.turn_id, self.context.now = session_id, turn.id, now
             notify = turn.notify
             notify("turn", name="turn started", turn_id=turn.id, session_id=session_id, long=long)
             try:

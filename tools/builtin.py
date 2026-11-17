@@ -29,6 +29,7 @@ MAX_FACT = 500
 class TurnContext:
     session_id: str | None = None
     turn_id: str | None = None
+    now: datetime | None = None    # the turn's clock when it runs as of another date (replay, evals)
 
 
 def _schema(properties: dict, required: list[str] | None = None) -> dict:
@@ -80,7 +81,9 @@ def builtin_tools(store: MemoryStore, skills: SkillLibrary, context: TurnContext
             f"No fact contains {text!r}. Use search_memory to find the exact wording."
 
     def current_time() -> str:
-        now = datetime.now().astimezone()
+        # A turn replayed "as of" a past date must see that date here too, or the model gets
+        # two different todays: the prompt's and this tool's (LongMemEval, 2026-11-17).
+        now = (context.now or datetime.now()).astimezone()
         return now.strftime("%A %d %B %Y, %H:%M %Z (UTC%z)")
 
     def load_skill(name: str) -> str:

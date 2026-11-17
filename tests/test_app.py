@@ -151,6 +151,25 @@ def test_refusal_and_limit_statuses(tmp_path):
     assert turn["status"] == "limit" and turn["checks"]["within_step_limit"] is False
 
 
+def test_current_time_tool_sees_the_turns_date(tmp_path):
+    """respond(now=...) sets the clock for the tool too, not only for the prompt."""
+    from datetime import datetime, timezone
+    seen = []
+
+    def script(request):
+        results = [b for m in request["messages"] if isinstance(m["content"], list)
+                   for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"]
+        if results:
+            seen.append(str(results[-1]["content"]))
+            return message(text("It's 2023."))
+        return message(tool_use("current_time", {}), stop_reason="tool_use")
+    agent, _, _ = make(tmp_path, script)
+    agent.respond("what's the date?", now=datetime(2023, 5, 30, 9, 0, tzinfo=timezone.utc))
+    assert seen and "2023" in seen[0]
+    agent.respond("and now?")                         # a live turn: back to the real clock
+    assert str(datetime.now().year) in seen[-1] and agent.context.now is None
+
+
 def test_status_and_system_prompt_order(tmp_path):
     agent, _, _ = make(tmp_path, [])
     status = agent.status()

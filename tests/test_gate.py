@@ -61,6 +61,20 @@ def test_failure_fails_open(store):
     assert events[1][0] == "llm" and events[1][1]["ok"] is False
 
 
+def test_messages_about_the_user_always_search(store):
+    """A small gate model called "suggest activities I can do in the evening" general
+    knowledge and skipped memory (Qwen3.5-9B, LongMemEval-S 2026-11-17)."""
+    client = FakeClient(small=gate(False))
+    sid = store.ensure_session(None, "x")
+    result = recall(store, client, "m", sid, "Can you suggest a time for my meeting with Alex?")
+    assert result.retrieve and result.forced
+    assert [f.split(") ", 1)[1] for f in result.facts] == ["Alex prefers morning meetings"]
+    for general in ("hi", "what's the capital of France?", "thanks!", "Summarise this: mine shafts"):
+        result = decide(client, "m", general, None)
+        assert result.retrieve == (general.endswith("shafts")) and result.forced == result.retrieve
+    assert decide(FakeClient(small=gate(True, "q")), "m", "my plans?", None).forced is False
+
+
 def test_refusal_is_a_failure():
     client = FakeClient()
     client.messages.create = lambda **_: message(text(""), stop_reason="refusal")

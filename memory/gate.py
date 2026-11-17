@@ -21,6 +21,7 @@ assume no correction: a wasted search is cheaper than a forgotten fact.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from loop.llm import ask_json, schema
@@ -45,6 +46,15 @@ GATE_FORMAT = schema({
 # some of them, while recall kept the top 5 facts and 4 excerpts.
 WIDE = {"facts": 12, "episodes": 5, "excerpts": 10}
 MAX_QUERIES = 4
+
+# A message about the user ("my", "I", "me") always searches, whatever the gate says.
+# LongMemEval-S, 2026-11-17: with Qwen3.5-9B as the gate model, it skipped retrieval on 11
+# of 100 questions ("Can you suggest some activities I can do in the evening?" was "a
+# general request"; one said "requires memory retrieval" and still answered false), and
+# 9 of those 11 were answered wrong. Haiku skipped none. This rule catches 10 of the 11
+# (not "which trip did the narrator take first?"). A search is a few local lookups; a
+# skipped one is usually a wrong answer.
+PERSONAL = re.compile(r"\b(i|i'm|i've|i'd|i'll|me|my|mine|myself)\b", re.IGNORECASE)
 
 PROMPT = """You decide whether a personal assistant should search its long-term memory
 before answering, and whether the user is correcting the assistant.
@@ -87,6 +97,7 @@ class GateResult:
     facts: list[str] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
     failed: bool = False
+    forced: bool = False           # the gate said no, but the message is about the user
 
 
 def _previous(last: dict | None) -> str:
@@ -105,10 +116,12 @@ def decide(client, model: str, message: str, last: dict | None, notify=None) -> 
         query = answer["query"].strip() or message
         scope = "all" if answer.get("scope") == "all" else "one"
         extra = [q.strip() for q in answer.get("queries") or [] if q.strip()] if scope == "all" else []
-        return GateResult(bool(answer["retrieve"]), query,
+        retrieve = bool(answer["retrieve"])
+        forced = not retrieve and bool(PERSONAL.search(message))
+        return GateResult(retrieve or forced, query,
                           bool(answer["correction"]) and last is not None,
                           answer["reason"], bool(answer.get("complex", False)),
-                          scope=scope, queries=extra[:MAX_QUERIES])
+                          scope=scope, queries=extra[:MAX_QUERIES], forced=forced)
     except Exception as exc:
         log.warning("retrieval gate failed, searching anyway: %s", exc)
         return GateResult(True, message, False, f"gate failed: {exc}", failed=True)
@@ -134,7 +147,7 @@ def recall(store: MemoryStore, client, model: str, session_id: str, message: str
     if notify:
         notify("gate", name="memory recall", retrieve=result.retrieve, query=result.query,
                correction=result.correction, complex=result.complex, scope=result.scope, queries=result.queries,
-               reason=result.reason, failed=result.failed,
+               reason=result.reason, failed=result.failed, forced=result.forced,
                facts=result.facts, episodes=result.episodes, excerpts=result.excerpts)
     return result
 

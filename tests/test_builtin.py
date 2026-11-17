@@ -55,6 +55,18 @@ def test_current_time_has_timezone(setup):
     assert not error and "UTC" in output
 
 
+def test_current_time_follows_the_turns_clock(tmp_path):
+    """A turn replayed as of 2023 must not hear "today is 2026" from the tool."""
+    from datetime import datetime, timezone
+    context = TurnContext("s1", "t1", now=datetime(2023, 5, 30, 14, 5, tzinfo=timezone.utc))
+    registry = ToolRegistry()
+    register_builtins(registry, MemoryStore(tmp_path / "m.db"), SkillLibrary(tmp_path / "skills"), context)
+    output, error = run(registry, "current_time")
+    assert not error and "2023" in output
+    context.now = None                     # a live turn: the real clock again
+    assert str(datetime.now().year) in run(registry, "current_time")[0]
+
+
 def test_skills_save_then_load_with_provenance(setup):
     registry, _, skills = setup
     output, error = run(registry, "save_skill", name="weekly-review",
