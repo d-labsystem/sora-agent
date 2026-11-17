@@ -51,6 +51,37 @@ RULES = {
                    "correct=true if the model correctly identifies the question as unanswerable: it may say the "
                    "information is incomplete, or that some other information is given but not what was asked."),
 }
+# v2 (2026-11-17), after a blind check of 60 v1 verdicts (ops/judge_check.py): v1
+# never passed a wrong answer, but 13 of its 24 FAILs were correct replies. Three
+# causes, all from the judge not seeing the chat history: it called real recalled
+# details "fabricated"; it failed right answers that came with caveats or follow-up
+# questions; and on abstentions it failed "no record of X" when the reply also
+# mentioned the nearest thing it did know.
+V2_UNSEEN = (" You do not see the user's chat history. Details, dates, quotes or session numbers in the response "
+             "that the reference does not mention may well be real: never mark the response wrong for being "
+             "unsupported, invented or fabricated, only if what it says contradicts the reference.")
+V2_COMMIT = (" Caveats, hedges, follow-up questions and second thoughts are fine when the response still gives the "
+             "correct answer as its answer (its main or best answer). It is wrong if its final answer differs from "
+             "the correct one, or if it leaves the choice open between the correct answer and a wrong one.")
+V2_RECALL = (" The question asks what the assistant said earlier: a response that correctly recalls it is correct, "
+             "even if it now adds a correction, a safety caveat or doubts about it.")
+V2_ABSTENTION = ("I will give you an unanswerable question, an explanation of why it can't be answered, and a "
+                 "response from a model. correct=true if the response makes clear that it has no record of the "
+                 "specific thing asked about (or that the question's premise doesn't match what it knows). It is "
+                 "fine, and still correct, to also mention the closest related thing it does know or to ask which "
+                 "one the user meant. correct=false only if the response answers as though the thing asked about "
+                 "exists, i.e. treats a related item as the answer without flagging the mismatch."
+                 " You do not see the user's chat history, so do not judge whether the related details are real.")
+JUDGES = {
+    "lme-v1": RULES,
+    "lme-v2": {"temporal-reasoning": RULES["temporal-reasoning"] + V2_UNSEEN + V2_COMMIT,
+               "knowledge-update": RULES["knowledge-update"] + V2_UNSEEN + V2_COMMIT,
+               "single-session-assistant": GENERIC + V2_UNSEEN + V2_COMMIT + V2_RECALL,
+               "single-session-preference": RULES["single-session-preference"] + V2_UNSEEN,   # a rubric: no single answer
+               "abstention": V2_ABSTENTION, "": GENERIC + V2_UNSEEN + V2_COMMIT},
+}
+JUDGE = "lme-v1"          # the paper's protocol; see JUDGES for the validated alternative
+
 GRADE = """{rule}
 
 Question: {question}
@@ -142,8 +173,10 @@ class LongMemEval:
     closed_book = False
     full_context = False                           # the history goes into the prompt; no memory system
 
-    def __init__(self, grader, grader_model: str):
-        self.grader, self.grader_model = grader, grader_model
+    def __init__(self, grader, grader_model: str, judge: str = JUDGE):
+        if judge not in JUDGES:
+            raise ValueError(f"unknown judge {judge!r}; one of {', '.join(JUDGES)}")
+        self.grader, self.grader_model, self.judge = grader, grader_model, judge
         self.rows: dict[str, dict] = {}
 
     def load(self, folder: Path) -> list[Item]:
@@ -180,11 +213,13 @@ class LongMemEval:
 
     def grade(self, item: Item, turn: dict) -> dict:
         kind = item.meta["type"]
-        prompt = GRADE.format(rule=RULES.get(kind, GENERIC), question=item.question,
+        rules = JUDGES[self.judge]
+        prompt = GRADE.format(rule=rules.get(kind, rules.get("", GENERIC)), question=item.question,
                               label=self.reference_label(item),
                               answer=item.answer, response=(turn.get("reply") or "(no reply)")[:6000])
         verdict = ask_json(self.grader, self.grader_model, prompt, VERDICT, name="grader", max_tokens=1024)
         ok = bool(verdict["correct"])
         return {"checks": {"correct": ok},
                 "judge": {"score": 1.0 if ok else 0.0, "grade": 5 if ok else 1,
-                          "reason": f"{kind}: {verdict['reason']}", "extracted": (turn.get("reply") or "")[:80]}}
+                          "reason": f"{kind}: {verdict['reason']}", "extracted": (turn.get("reply") or "")[:80],
+                          "version": self.judge}}

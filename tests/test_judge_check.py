@@ -182,8 +182,51 @@ def test_dashboard_serves_items_blind_and_saves_labels(tmp_path):
         assert post({"id": item["id"], "human": "maybe"})[0] == 400
         assert post({"id": 999, "human": "wrong"})[0] == 404
         report = get("/api/judge-check/report")
-        assert report["n"] == 1 and "judge check: 1/4 labelled" in report["text"]
+        assert report["n"] == 1 and ": 1/4 labelled" in report["text"]
     finally:
         srv.dashboard.close()
         srv.shutdown()
         srv.server_close()
+
+
+def test_label_sets_never_overlap_and_report_separately(check):
+    check.sample(["run-a", "run-b"], 10, refs, label_set="dev")
+    check.sample(["run-a", "run-b"], 10, refs, seed=5, label_set="test")
+    rows = check._rows("SELECT run_id, case_id, label_set FROM judge_labels")
+    assert len({(r["run_id"], r["case_id"]) for r in rows}) == 20          # no case in both sets
+    assert check.progress("test")["total"] == 10 and check.progress()["total"] == 20
+    for r in check._rows("SELECT id, label_set FROM judge_labels"):
+        check.label(r["id"], "correct")
+    assert check.report("test")["n"] == 10 and check.report()["n"] == 20
+
+
+def test_report_against_a_regrade_uses_the_new_verdicts(check):
+    check.sample(["run-a"], 6, refs)
+    for r in check._rows("SELECT id FROM judge_labels"):
+        check.label(r["id"], "correct")                    # every reply was really correct
+    before = check.report()
+    assert before["too_strict"] == sum(1 for r in check._rows("SELECT judge_passed FROM judge_labels")
+                                       if not r["judge_passed"])
+    run = check.tracer.eval_run("run-a")
+    regraded = [{**r, "passed": True, "judge": {**(r["judge"] or {}), "of_run": "run-a"}} if r.get("judge") else r
+                for r in run["results"]]
+    check.tracer.save_eval_run({**run, "id": "run-a2", "dataset": "longmemeval (test) [judge lme-v2]",
+                                "results": regraded, "passed": sum(r["passed"] for r in regraded)})
+    after = check.report(judge="lme-v2")
+    assert after["too_strict"] == 0 and after["agreement"] == 1.0 and after["runs"] == []   # no correction for a re-grade
+    assert "judge lme-v2" in format_report(after)
+    assert check.report(judge="lme-v9")["missing"] == 6
+
+
+def test_old_label_tables_get_the_set_column(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "traces.db")
+    db.execute("CREATE TABLE judge_labels (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, case_id TEXT NOT NULL, "
+               "turn_id TEXT, kind TEXT, question TEXT, reference TEXT, reference_label TEXT, reply TEXT, "
+               "judge_passed INTEGER NOT NULL, judge_reason TEXT, human TEXT, note TEXT, position INTEGER NOT NULL, "
+               "labeled_at TEXT, UNIQUE (run_id, case_id))")
+    db.execute("INSERT INTO judge_labels (run_id, case_id, judge_passed, position) VALUES ('r', 'q', 1, 1)")
+    db.commit()
+    db.close()
+    check = JudgeCheck(Tracer(tmp_path / "traces.db"))
+    assert check.progress("dev")["total"] == 1

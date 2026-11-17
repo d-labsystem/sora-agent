@@ -424,13 +424,32 @@ def judge_command(args, out: IO[str]) -> int:
     from ops.tracing import Tracer
     settings = load_settings(args.home)
     check = JudgeCheck(Tracer(settings.home / "traces.db"))
+    if args.action == "rejudge":
+        from harness.app import eval_setup
+        from ops.bench import rejudge
+        runs = [r.strip() for r in args.runs.split(",") if r.strip()]
+        if not runs or not args.judge:
+            out.write("give the runs and the judge: --runs bench-…,bench-… --judge lme-v2\n")
+            return 1
+        tracer, grader, _, grader_model, _ = eval_setup()
+        for run_id in runs:
+            try:
+                new = rejudge(tracer, grader, grader_model, run_id, args.judge, settings.home)
+            except (KeyError, ValueError) as exc:
+                out.write(f"{exc.args[0]}\n")
+                return 1
+            out.write(f"{run_id} → {new['id']}: {new['was']}/{new['cases']} → {new['passed']}/{new['cases']} "
+                      f"({new['changed']} verdicts changed)  {new['dataset']}\n")
+            out.flush()
+        return 0
     if args.action == "sample":
         runs = [r.strip() for r in args.runs.split(",") if r.strip()]
         if not runs:
             out.write("give the runs to sample from: --runs bench-…,bench-… (see the Evals tab)\n")
             return 1
         try:
-            added = check.sample(runs, args.n, benchmark_references(settings.home), args.seed)
+            added = check.sample(runs, args.n, benchmark_references(settings.home), args.seed,
+                                 args.label_set or "dev")
         except (KeyError, ValueError) as exc:
             out.write(f"{exc.args[0]}\n")
             return 1
@@ -439,10 +458,10 @@ def judge_command(args, out: IO[str]) -> int:
                   "Label them in the dashboard: Evals → Judge check.\n")
         return 0
     if args.action == "status":
-        p = check.progress()
+        p = check.progress(args.label_set)
         out.write(f"{p['done']}/{p['total']} labelled, {p['unsure']} unsure\n")
         return 0
-    out.write(format_report(check.report()) + "\n")
+    out.write(format_report(check.report(args.label_set, args.judge)) + "\n")
     return 0
 
 
@@ -485,10 +504,14 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     bn.add_argument("--label", default="")
     bn.add_argument("--ids", default="", help="comma-separated question ids to run instead of a sample")
     jc = sub.add_parser("judge", help="check the benchmark judge: sample its verdicts, you label them blind, see agreement")
-    jc.add_argument("action", choices=["sample", "status", "report"])
+    jc.add_argument("action", choices=["sample", "status", "report", "rejudge"])
     jc.add_argument("--runs", default="", help="sample: comma-separated eval run ids to draw verdicts from")
     jc.add_argument("--n", type=int, default=60, help="sample: how many verdicts to add")
     jc.add_argument("--seed", type=int, default=0)
+    jc.add_argument("--set", dest="label_set", default=None,
+                    help="label set: dev (to tune a judge) or test (to check it); sample defaults to dev")
+    jc.add_argument("--judge", default=None,
+                    help="rejudge: the judge version to grade with; report: compare against that judge's re-grade")
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])

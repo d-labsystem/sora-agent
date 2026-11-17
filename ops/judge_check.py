@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS judge_labels (
     note TEXT,
     position INTEGER NOT NULL,                    -- labelling order (shuffled)
     labeled_at TEXT,
+    label_set TEXT NOT NULL DEFAULT 'dev',        -- dev: used to tune a judge; test: kept for checking it
     UNIQUE (run_id, case_id));
 """
 HUMAN = ("correct", "wrong", "unsure")
@@ -79,6 +80,10 @@ class JudgeCheck:
         self.tracer = tracer
         with tracer.lock:
             tracer.conn.executescript(TABLE)
+            have = {r[1] for r in tracer.conn.execute("PRAGMA table_info(judge_labels)")}
+            if "label_set" not in have:                       # sets made before label sets existed
+                tracer.conn.execute("ALTER TABLE judge_labels ADD COLUMN label_set TEXT NOT NULL DEFAULT 'dev'")
+                tracer.conn.commit()
 
     def _rows(self, sql: str, params: tuple = ()) -> list[dict]:
         with self.tracer.lock:
@@ -120,8 +125,10 @@ class JudgeCheck:
                     picked.append(q.pop())
         return picked
 
-    def sample(self, run_ids: list[str], n: int, references: References, seed: int = 0) -> int:
-        """Add n verdicts to the label set (cases already in it are skipped). Returns how many were added."""
+    def sample(self, run_ids: list[str], n: int, references: References, seed: int = 0,
+               label_set: str = "dev") -> int:
+        """Add n verdicts to the labels, in the named set. Cases already labelled, in any set,
+        are skipped, so a test set never repeats a case a judge was tuned on. Returns how many were added."""
         have = {(r["run_id"], r["case_id"]) for r in self._rows("SELECT run_id, case_id FROM judge_labels")}
         pool = [c for c in self.candidates(run_ids) if (c["run_id"], c["case_id"]) not in have]
         picked = self.stratified(pool, n, seed)
@@ -131,19 +138,21 @@ class JudgeCheck:
         for i, c in enumerate(picked, start + 1):
             question, reference, label = references(c["dataset"]).get(c["case_id"], ("", "", "Correct answer"))
             rows.append((c["run_id"], c["case_id"], c["turn_id"], c["kind"], question, reference, label,
-                         c["reply"], int(c["judge_passed"]), c["judge_reason"], i))
+                         c["reply"], int(c["judge_passed"]), c["judge_reason"], i, label_set))
         with self.tracer.lock:
             self.tracer.conn.executemany(
                 "INSERT INTO judge_labels (run_id, case_id, turn_id, kind, question, reference, reference_label, "
-                "reply, judge_passed, judge_reason, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                "reply, judge_passed, judge_reason, position, label_set) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows)
             self.tracer.conn.commit()
         return len(rows)
 
     # ---- labelling (what the dashboard calls; never shows the judge's verdict)
 
-    def progress(self) -> dict:
+    def progress(self, label_set: str | None = None) -> dict:
         row = self._rows("SELECT COUNT(*) AS total, COUNT(human) AS done, "
-                         "SUM(human = 'unsure') AS unsure FROM judge_labels")[0]
+                         "SUM(human = 'unsure') AS unsure FROM judge_labels"
+                         + (" WHERE label_set = ?" if label_set else ""), (label_set,) if label_set else ())[0]
         return {"total": row["total"], "done": row["done"], "unsure": row["unsure"] or 0}
 
     def item(self, label_id: int | None = None) -> dict | None:
@@ -164,10 +173,40 @@ class JudgeCheck:
 
     # ---- the report
 
-    def report(self) -> dict:
+    def verdicts(self, judge: str) -> dict[tuple[str, str], dict]:
+        """(original run, case) -> the verdict a re-grade with `judge` gave (the latest re-grade wins)."""
+        found = {}
+        for run in self._rows("SELECT id FROM eval_runs WHERE dataset LIKE ? ORDER BY started_at",
+                              (f"%[judge {judge}]",)):
+            full = self.tracer.eval_run(run["id"])
+            for r in full["results"]:
+                j = r.get("judge") or {}
+                if j.get("of_run"):
+                    found[(j["of_run"], r["id"])] = {"passed": bool(r["passed"]), "reason": j.get("reason", ""),
+                                                     "run": full}
+        return found
+
+    def report(self, label_set: str | None = None, judge: str | None = None) -> dict:
+        """The report for one label set (or all), for the judge that graded the runs, or for
+        another judge's re-grade of them (`sora judge rejudge`)."""
         rows = self._rows("SELECT l.*, r.model, r.dataset, r.cases, r.passed FROM judge_labels l "
-                          "LEFT JOIN eval_runs r ON r.id = l.run_id WHERE l.human IN ('correct', 'wrong')")
-        return summarize(rows, self.progress())
+                          "LEFT JOIN eval_runs r ON r.id = l.run_id WHERE l.human IN ('correct', 'wrong')"
+                          + (" AND l.label_set = ?" if label_set else ""), (label_set,) if label_set else ())
+        missing = 0
+        if judge:
+            again = self.verdicts(judge)
+            regraded = []
+            for r in rows:
+                v = again.get((r["run_id"], r["case_id"]))
+                if v is None:
+                    missing += 1
+                    continue
+                run = v["run"]
+                regraded.append({**r, "judge_passed": int(v["passed"]), "judge_reason": v["reason"],
+                                 "cases": run["cases"], "passed": run["passed"]})
+            rows = regraded
+        out = summarize(rows, self.progress(label_set), corrected=not judge)
+        return {**out, "label_set": label_set or "all", "judge": judge or "as graded", "missing": missing}
 
 
 def kappa(pairs: list[tuple[bool, bool]]) -> float | None:
@@ -188,7 +227,7 @@ def _rate(hits: int, total: int) -> dict:
     return {"hits": hits, "n": total, "rate": hits / total if total else None, "low": low, "high": high}
 
 
-def summarize(rows: list[dict], progress: dict) -> dict:
+def summarize(rows: list[dict], progress: dict, corrected: bool = True) -> dict:
     pairs = [(bool(r["judge_passed"]), r["human"] == "correct") for r in rows]
     passed = [h for j, h in pairs if j]
     failed = [h for j, h in pairs if not j]
@@ -204,7 +243,9 @@ def summarize(rows: list[dict], progress: dict) -> dict:
                 for k, v in sorted(out.items())]
 
     runs = {}
-    if precision["n"] and miss["n"]:
+    # The sample is stratified by the original judge's verdicts, so only that judge's
+    # precision and miss rate are estimated without bias: no corrected accuracy for a re-grade.
+    if corrected and precision["n"] and miss["n"]:
         for r in rows:
             if r["run_id"] in runs or not r["cases"]:
                 continue
@@ -239,7 +280,10 @@ def _rate_line(what: str, x: dict, verdict: str) -> str:
 
 def format_report(r: dict) -> str:
     p = r["progress"]
-    lines = [f"judge check: {p['done']}/{p['total']} labelled ({p['unsure']} unsure, left out)"]
+    head = f"judge check ({r.get('label_set', 'all')} labels, judge {r.get('judge', 'as graded')})"
+    lines = [f"{head}: {p['done']}/{p['total']} labelled ({p['unsure']} unsure, left out)"]
+    if r.get("missing"):
+        lines.append(f"{r['missing']} labelled cases have no verdict from this judge yet: run `sora judge rejudge`")
     if not r["n"]:
         return lines[0] + "\nNothing labelled yet: open the dashboard, Evals → Judge check."
     k = r["kappa"]

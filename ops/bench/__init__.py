@@ -72,3 +72,40 @@ def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=s
                          parallel=getattr(bench, "parallel", 1))
     out.write("\n" + runner.report(summary) + "\n")
     return 0
+
+
+def rejudge(tracer, grader, grader_model: str, run_id: str, judge: str, home, parallel: int = 8) -> dict:
+    """Grade a finished run's saved replies again with another judge; the agent doesn't run.
+    Saved as a new run, "<dataset> [judge <judge>]", each verdict pointing back at the
+    original run (judge.of_run), so the two can be compared case by case."""
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    from ops.tracing import now_iso
+    run = tracer.eval_run(run_id)
+    if run is None:
+        raise KeyError(f"no eval run {run_id!r}")
+    name = run["dataset"].split(" ", 1)[0]
+    if name not in BENCHMARKS:
+        raise ValueError(f"{run['dataset']!r} isn't a benchmark run")
+    bench = benchmark_class(name)(grader, grader_model, judge=judge)
+    items = {i.id: i for i in bench.load(Path(home) / "benchmarks" / name)}
+
+    def one(r: dict) -> dict:
+        if r.get("error") or not r.get("judge"):
+            return r                                   # crashed: nothing to grade, scored as before
+        graded = bench.grade(items[r["id"]], {"reply": r.get("reply") or ""})
+        return {**r, "passed": all(graded["checks"].values()), "checks": graded["checks"],
+                "judge": {**graded["judge"], "of_run": run_id}}
+
+    started = now_iso()
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        results = list(pool.map(one, run["results"]))
+    base = run["dataset"].split(" [judge ")[0]
+    new = {"id": "bench-" + uuid.uuid4().hex[:8], "dataset": f"{base} [judge {judge}]", "model": run["model"],
+           "cases": len(results), "passed": sum(r["passed"] for r in results),
+           "cost_usd": run["cost_usd"],              # the answers' cost; grading isn't part of it
+           "results": results, "started_at": started, "ended_at": now_iso()}
+    tracer.save_eval_run(new)
+    changed = sum(a["passed"] != b["passed"] for a, b in zip(run["results"], results))
+    return {**new, "was": run["passed"], "changed": changed}

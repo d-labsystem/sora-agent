@@ -269,3 +269,46 @@ def test_conversation_caching_can_be_turned_off_for_one_off_prompts():
     provider.cache_conversation = False
     provider.step("m", "sys", [{"role": "user", "content": "hi"}], [], "low", lambda d: None)
     assert "cache_control" in client.requests[0] and "cache_control" not in client.requests[1]
+
+
+def test_judge_versions_change_only_the_rules_and_are_recorded():
+    from ops.bench.longmemeval import LongMemEval
+    v1, v2 = LongMemEval(None, "haiku"), LongMemEval(None, "haiku", judge="lme-v2")
+    for kind in ("temporal-reasoning", "knowledge-update", "single-session-user", "single-session-assistant"):
+        p1, p2 = GRADE_for(v1, kind), GRADE_for(v2, kind)
+        assert "You do not see the user's chat history" not in p1
+        assert "You do not see the user's chat history" in p2 and "main or best answer" in p2
+    assert "off-by-one" in GRADE_for(v2, "temporal-reasoning")              # the paper's rules are kept
+    assert "correctly recalls it" in GRADE_for(v2, "single-session-assistant")
+    pref = GRADE_for(v2, "single-session-preference")                       # a rubric has no single answer
+    assert "chat history" in pref and "main or best answer" not in pref
+    assert "closest related thing" in GRADE_for(v2, "abstention")
+    v2.grader = FakeClient(small=[{"correct": True, "reason": "r"}])
+    assert v2.grade(runner.Item("q", "Q?", "A", {"type": "multi-session"}), {"reply": "A"})["judge"]["version"] == "lme-v2"
+    with pytest.raises(ValueError):
+        LongMemEval(None, "haiku", judge="lme-v9")
+
+
+def test_rejudge_grades_saved_replies_again_and_links_back(tmp_path, monkeypatch):
+    from ops.bench import rejudge
+    from ops.bench.longmemeval import LongMemEval
+    from ops.tracing import now_iso
+    monkeypatch.setattr(LongMemEval, "load", lambda self, folder: [
+        runner.Item(f"q{i}", f"Q{i}?", "A", {"type": "multi-session"}) for i in range(3)])
+    tracer = Tracer(tmp_path / "traces.db")
+    results = [{"id": f"q{i}", "turn_id": f"t{i}", "passed": False, "checks": {"correct": False},
+                "judge": {"reason": "v1 said no"}, "reply": f"reply {i}", "cost_usd": 0.01,
+                "meta": {"type": "multi-session"}} for i in range(2)]
+    results.append({"id": "q2", "turn_id": None, "passed": False, "checks": {}, "judge": None,
+                    "error": "timeout", "reply": "", "cost_usd": 0.0, "meta": {"type": "multi-session"}})
+    tracer.save_eval_run({"id": "run-1", "dataset": "longmemeval (x)", "model": "m", "cases": 3, "passed": 0,
+                          "cost_usd": 0.02, "results": results, "started_at": now_iso(), "ended_at": now_iso()})
+    grader = FakeClient(small=lambda req: {"correct": "reply 1" in req["messages"][0]["content"], "reason": "v2"})
+    new = rejudge(tracer, grader, "haiku", "run-1", "lme-v2", tmp_path)
+    assert new["dataset"] == "longmemeval (x) [judge lme-v2]" and new["passed"] == 1 and new["changed"] == 1
+    assert len(grader.small_requests) == 2                                   # the crashed case isn't graded
+    saved = tracer.eval_run(new["id"])
+    assert saved["results"][1]["judge"] == {**saved["results"][1]["judge"], "of_run": "run-1", "version": "lme-v2"}
+    assert saved["results"][2]["error"] == "timeout" and saved["cost_usd"] == 0.02
+    with pytest.raises(KeyError):
+        rejudge(tracer, grader, "haiku", "nope", "lme-v2", tmp_path)
