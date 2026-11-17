@@ -73,3 +73,46 @@ def test_correction_needs_a_previous_reply(store):
     sid = store.ensure_session(None, "x")
     store.add_exchange(sid, "What's 2+2?", "5")
     assert recall(store, client, "m", sid, "no, that's wrong").correction is True
+
+
+# ---- "all" questions: every mention, not only the best one (LongMemEval-S, 2026-11-16)
+
+def test_all_questions_search_each_phrasing_and_keep_more(tmp_path):
+    from memory.gate import WIDE
+    s = MemoryStore(tmp_path / "m.db")
+    for fact in ["The user plays a black Fender Stratocaster electric guitar",
+                 "The user owns a 5-piece Pearl Export drum set they want to sell",
+                 "The user has had a Korg B1 piano for about 3 years",
+                 "The user's niece is learning the violin"]:
+        s.add_fact(fact)
+    client = FakeClient(small={**gate(True, "musical instruments owned"), "scope": "all",
+                               "queries": ["guitar", "drum set", "piano"]})
+    sid = s.ensure_session(None, "x")
+    result = recall(s, client, "m", sid, "How many musical instruments do I own?")
+    found = " ".join(result.facts)
+    assert result.scope == "all" and result.queries == ["guitar", "drum set", "piano"]
+    assert all(w in found for w in ("Stratocaster", "Pearl Export", "Korg B1"))
+    assert len(result.facts) <= WIDE["facts"] and len(result.facts) == len(set(result.facts))
+
+
+def test_one_questions_ignore_extra_queries():
+    client = FakeClient(small={**gate(True, "Priya birthday"), "scope": "one", "queries": ["cake"]})
+    result = decide(client, "m", "When is Priya's birthday?", None)
+    assert result.scope == "one" and result.queries == []
+
+
+def test_merged_takes_each_searchs_best_first_without_repeats():
+    from memory.gate import _merged
+    assert _merged([["a", "b", "c"], ["d", "a", "e"], ["f"]], 5) == ["a", "d", "f", "b", "c"]
+
+
+def test_memory_section_carries_the_answer_rules_and_the_all_note():
+    from datetime import datetime
+    from harness.app import MEMORY_RULES, build_system
+    from memory.gate import GateResult
+    one = GateResult(True, "q", False, "r", facts=["(2023-05-20) a fact"])
+    every = GateResult(True, "q", False, "r", scope="all", facts=["(2023-05-20) a fact"])
+    text = lambda found: build_system("soul", datetime(2026, 11, 16), "", [], [], found)[1]["text"]
+    assert MEMORY_RULES in text(one) and "every relevant mention" not in text(one)
+    assert "every relevant mention" in text(every)
+    assert "give it plainly first" in MEMORY_RULES and "Never add people" in MEMORY_RULES

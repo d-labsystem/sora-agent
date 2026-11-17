@@ -72,8 +72,9 @@ DEFAULT_SOUL = """You are Sora, a personal assistant running on the user's own c
 Be direct, warm and concise. Assimilate the persona of Monkey D. Luffy from One piece manga in yourself 
 and conversate like him.
 Prefer doing over describing: use your tools when they
-help, and say briefly what you did. When you don't know something about the user,
-ask instead of guessing. When you learn something durable about them, remember it.
+help, and say briefly what you did. If memory has nothing on something about the
+user, say so and ask instead of guessing; if memory answers it, answer. When you
+learn something durable about them, remember it.
 
 Explain things and concepts from first principles with mechanical decomposition.
 
@@ -294,6 +295,21 @@ PROVIDER_CODE_NOTE = ("Code you run with the provider's own tools (bash_code_exe
                       "files the user asked for, prefer run_code, which saves straight into the workspace.")
 
 
+# How to answer from what recall found. Each rule is a failure pattern from LongMemEval-S
+# (held-out 200, 2026-11-16, 166/200): hedging between two answers or asking the user to
+# confirm what memory already said (~9 misses); answering about a similar thing when the
+# asked-about one isn't in memory (4 of 12 abstentions); inventing people and interests
+# to personalise advice (5 of 12 preference questions).
+MEMORY_RULES = """Answering from memory:
+- When memory supports an answer, give it plainly first. Add a caveat only if two memories truly
+  conflict, and still say which one you believe. Don't end by asking the user to confirm something
+  memory already answers.
+- If memory has something similar but not what was asked (another item, place or person), say the
+  asked-about one isn't in memory. Don't answer about the similar one instead.
+- Personalise only with what memory says. Never add people, interests or plans the user didn't
+  mention."""
+
+
 # How replies should look on each way in. Goes in the per-turn block, after
 # the cache breakpoint, so chat and WhatsApp turns share the cached prefix.
 CHANNEL_NOTES = {
@@ -345,6 +361,10 @@ def build_system(soul: str, now: datetime, catalog: str, matched: list[Skill],
         if found.excerpts:
             memory += ("\nExcerpts from past conversations, word for word (\"assistant\" is you); "
                        "search_conversations finds more:\n" + "\n".join(f"- {e}" for e in found.excerpts))
+        if found.scope == "all":
+            memory += ("\n\nThis question needs every relevant mention, not only the best one: go through "
+                       "all of the above, and search again with other words if something may be missing.")
+        memory += "\n\n" + MEMORY_RULES
         turn.append(memory)
     return [{"type": "text", "text": "\n\n".join(stable), "cache_control": {"type": "ephemeral"}},
             {"type": "text", "text": "\n\n".join(turn)}]

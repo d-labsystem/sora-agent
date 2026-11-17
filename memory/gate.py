@@ -33,8 +33,18 @@ GATE_FORMAT = schema({
     "query": {"type": "string"},
     "correction": {"type": "boolean"},
     "complex": {"type": "boolean"},
+    "scope": {"type": "string", "enum": ["one", "all"]},
+    "queries": {"type": "array", "items": {"type": "string"}},
     "reason": {"type": "string"},
 })
+
+# For "all" questions (how many, total, list every...), recall searches with each of the
+# gate's extra phrasings and keeps more of what it finds. LongMemEval-S, 2026-11-16: "how
+# many instruments do I own?" found 3 of 4, because the four were mentioned in passing in
+# five chats ("my Korg B1", "my old Pearl Export") and "musical instruments" matched only
+# some of them, while recall kept the top 5 facts and 4 excerpts.
+WIDE = {"facts": 12, "episodes": 5, "excerpts": 10}
+MAX_QUERIES = 4
 
 PROMPT = """You decide whether a personal assistant should search its long-term memory
 before answering, and whether the user is correcting the assistant.
@@ -53,6 +63,11 @@ complex: true if doing what the user asks takes several distinct steps, such as
 researching or comparing several things, then combining them, or finding
 information and then saving, scheduling or writing something with it. False
 for a single question, chat, or one simple action.
+scope: "all" if the answer needs every relevant mention from past conversations, such as
+how many, how much in total, list all, every time, which ones; "one" otherwise.
+queries: only when scope is "all", 2-4 more specific searches for the kinds of things that
+would be mentioned (for "how many instruments do I own": "guitar", "piano", "drum set",
+"violin"). Empty otherwise.
 reason: one short sentence.
 
 {previous}New message:
@@ -66,6 +81,8 @@ class GateResult:
     correction: bool
     reason: str
     complex: bool = False          # several steps: the harness asks for a plan first
+    scope: str = "one"             # "all": the answer needs every mention (counts, totals, lists)
+    queries: list[str] = field(default_factory=list)   # extra searches for "all" questions
     excerpts: list[str] = field(default_factory=list)   # words actually said in past conversations
     facts: list[str] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
@@ -86,9 +103,12 @@ def decide(client, model: str, message: str, last: dict | None, notify=None) -> 
                           PROMPT.format(previous=_previous(last), message=message),
                           GATE_FORMAT, notify, name="retrieval gate", max_tokens=1024)
         query = answer["query"].strip() or message
+        scope = "all" if answer.get("scope") == "all" else "one"
+        extra = [q.strip() for q in answer.get("queries") or [] if q.strip()] if scope == "all" else []
         return GateResult(bool(answer["retrieve"]), query,
                           bool(answer["correction"]) and last is not None,
-                          answer["reason"], bool(answer.get("complex", False)))
+                          answer["reason"], bool(answer.get("complex", False)),
+                          scope=scope, queries=extra[:MAX_QUERIES])
     except Exception as exc:
         log.warning("retrieval gate failed, searching anyway: %s", exc)
         return GateResult(True, message, False, f"gate failed: {exc}", failed=True)
@@ -98,7 +118,13 @@ def recall(store: MemoryStore, client, model: str, session_id: str, message: str
            notify=None, top_facts: int = 5, top_episodes: int = 3, top_excerpts: int = 4) -> GateResult:
     """Run the gate, then search memory if it said so. Emits a "gate" span."""
     result = decide(client, model, message, store.last_exchange(session_id), notify)
-    if result.retrieve:
+    if result.retrieve and result.scope == "all":
+        queries = [result.query, *result.queries]
+        result.facts = _merged([store.search_facts(q, WIDE["facts"], dated=True) for q in queries], WIDE["facts"])
+        result.episodes = _merged([store.search_episodes(q, WIDE["episodes"]) for q in queries], WIDE["episodes"])
+        result.excerpts = _merged([store.search_messages(q, WIDE["excerpts"], exclude_session=session_id)
+                                   for q in queries], WIDE["excerpts"])
+    elif result.retrieve:
         result.facts = store.search_facts(result.query, top_facts, dated=True)
         result.episodes = store.search_episodes(result.query, top_episodes)
         # Summaries lose details, and consolidation keeps facts about the user, not what sora
@@ -107,6 +133,19 @@ def recall(store: MemoryStore, client, model: str, session_id: str, message: str
         result.excerpts = store.search_messages(result.query, top_excerpts, exclude_session=session_id)
     if notify:
         notify("gate", name="memory recall", retrieve=result.retrieve, query=result.query,
-               correction=result.correction, complex=result.complex, reason=result.reason, failed=result.failed,
+               correction=result.correction, complex=result.complex, scope=result.scope, queries=result.queries,
+               reason=result.reason, failed=result.failed,
                facts=result.facts, episodes=result.episodes, excerpts=result.excerpts)
     return result
+
+
+def _merged(lists: list[list[str]], limit: int) -> list[str]:
+    """Round-robin over each search's results, best first, without repeats, so
+    every phrasing contributes its top hits before any adds its tail."""
+    out, seen = [], set()
+    for rank in range(max((len(x) for x in lists), default=0)):
+        for found in lists:
+            if rank < len(found) and found[rank] not in seen:
+                seen.add(found[rank])
+                out.append(found[rank])
+    return out[:limit]
