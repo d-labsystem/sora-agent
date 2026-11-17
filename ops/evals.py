@@ -421,7 +421,8 @@ def run_case(case: dict, factory: AgentFactory, tracer: Tracer, run_id: str,
                 checks["turn finished"] = False
             return {"id": case["id"], "turn_id": turn.get("id"), "passed": all(checks.values()),
                     "checks": checks, "judge": verdict, "reply": (turn.get("reply") or "")[:500],
-                    "cost_usd": spent}
+                    "cost_usd": spent,
+                    **({"error": turn["error"]} if turn.get("status") == "error" and turn.get("error") else {})}
         except Exception as exc:
             return {"id": case["id"], "turn_id": None, "passed": False, "checks": {},
                     "judge": None, "error": f"{type(exc).__name__}: {exc}",

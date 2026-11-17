@@ -102,13 +102,24 @@ def wilson(correct: int, total: int, z: float = 1.96) -> tuple[float, float]:
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
+# Errors that no other question will get past: the account, not the question. Seen
+# 2026-11-17: the credit ran out mid-run and 155 questions were logged as "wrong".
+ACCOUNT_ERRORS = ("credit balance is too low", "authentication_error", "invalid x-api-key",
+                  "permission_error", "billing", "no valid api key")
+
+
+def account_error(result: dict) -> str:
+    error = str(result.get("error") or "")
+    return error if any(e in error.lower() for e in ACCOUNT_ERRORS) else ""
+
+
 def run(bench: Benchmark, items: list[Item], factory, tracer, budget_usd: float, label: str = "",
         model: str = "", progress: Callable[[dict], None] | None = None, parallel: int = 1) -> dict:
     """Run `items` until done or the budget is spent. Saved as an eval run.
     `parallel` runs that many questions at once (each in its own home); the
     budget is then checked between batches, so it can be passed by up to one batch."""
     run_id = "bench-" + uuid.uuid4().hex[:8]
-    started, results, spent, stopped = now_iso(), [], 0.0, False
+    started, results, spent, stopped, blocked = now_iso(), [], 0.0, False, ""
     by_id = {i.id: i for i in items}
 
     def one(item: Item) -> dict:
@@ -124,9 +135,14 @@ def run(bench: Benchmark, items: list[Item], factory, tracer, budget_usd: float,
             if budget_usd and spent >= budget_usd:
                 stopped = True
                 break
+            if blocked:
+                break
             for result in pool.map(one, items[start:start + batch]):
-                results.append(result)
                 spent += result["cost_usd"]
+                if account_error(result):        # not an answer: leave it out of the score
+                    blocked = blocked or account_error(result)
+                    continue
+                results.append(result)
                 if progress:
                     progress(result)
     correct = sum(r["passed"] for r in results)
@@ -142,7 +158,7 @@ def run(bench: Benchmark, items: list[Item], factory, tracer, budget_usd: float,
            "started_at": started, "ended_at": now_iso()}
     tracer.save_eval_run(run)
     return {**run, "accuracy": correct / len(results) if results else 0.0, "interval": (low, high),
-            "planned": len(items), "stopped_by_budget": stopped,
+            "planned": len(items), "stopped_by_budget": stopped, "stopped_by_account": blocked,
             "flagged": [r["id"] for r in results if (r.get("judge") or {}).get("contaminated")],
             "groups": {k: (sum(v), len(v)) for k, v in sorted(groups.items())}}
 
@@ -157,6 +173,9 @@ def report(summary: dict) -> str:
         lines.append(f"searched for the benchmark itself (possible contamination): {', '.join(summary['flagged'])}")
     if summary["stopped_by_budget"]:
         lines.append(f"stopped at the budget after {n} of {summary['planned']} questions")
+    if summary.get("stopped_by_account"):
+        lines.append(f"STOPPED: the API refused the account after {n} of {summary['planned']} questions "
+                     f"(not scored): {summary['stopped_by_account'][:200]}")
     for group, (ok, total) in summary["groups"].items():
         lines.append(f"  {group:32} {ok}/{total}")
     calibration = calibrate(summary["results"])

@@ -29,15 +29,20 @@ CLOSED_BOOK = {"bare": True, "web_tools": False, "workspace": False, "code_execu
 
 
 def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=sys.stdout,
-         bare: bool = False, closed_book: bool = False, ids: str = "") -> int:
+         bare: bool = False, closed_book: bool = False, ids: str = "", full_context: bool = False) -> int:
     from harness.app import eval_setup, load_settings
     from ops.bench import runner
     # A benchmark's own settings (e.g. BrowseComp's per-question cap), then the mode's.
     overrides = {**getattr(benchmark_class(name), "settings", {}),
-                 **(CLOSED_BOOK if closed_book else {"bare": True} if bare else {})}
+                 **(CLOSED_BOOK if closed_book or full_context else {"bare": True} if bare else {}),
+                 **({"cache_conversation": False} if full_context else {})}   # each history is read once
     tracer, grader, model, grader_model, factory = eval_setup(**overrides)
     bench = build(name, grader, grader_model)
     bench.closed_book = closed_book                       # a benchmark may change its cases for it
+    if full_context and not hasattr(bench, "full_context"):
+        out.write(f"{name} has no full-context mode\n")
+        return 1
+    bench.full_context = full_context
     folder = load_settings().home / "benchmarks" / name
     items = bench.load(folder)
     if ids:                       # rerun chosen questions (e.g. ones that crashed), in the given order
@@ -50,7 +55,8 @@ def main(name: str, n: int, budget: float, seed: int = 0, label: str = "", out=s
         items = [by_id[i] for i in wanted]
     else:
         items = runner.sample(items, n, seed, getattr(bench, "strata_key", ""))
-    mode = "closed book" if closed_book else "bare model" if bare else ""
+    mode = ("full context" if full_context else "closed book" if closed_book
+            else "bare model" if bare else "")
     label = ", ".join(x for x in (label, mode) if x)
     out.write(f"{name}: {len(items)} questions (seed {seed}), budget ${budget:.2f}, model {model}"
               f"{f' ({mode})' if mode else ''}\n")

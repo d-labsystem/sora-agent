@@ -86,6 +86,31 @@ def exchanges(session: list[dict]) -> list[tuple[str, str]]:
     return pairs
 
 
+# The paper's "full-context" reader: every past session, dated, in the prompt, and no
+# memory system at all. It is the fair opponent for sora's memory: the same model
+# reading everything, instead of recalling a few facts. Adapted from LongMemEval's
+# reader prompt (src/generation/run_generation.py).
+FULL_CONTEXT = """I will give you several past chats between you and a user, each with its date. \
+Answer the question at the end from them.
+
+History chats:
+
+{history}
+
+Current date: {date}
+Question: {question}"""
+
+
+def history_text(row: dict) -> str:
+    """All of a question's past sessions, oldest first, as dated transcripts."""
+    sessions = sorted(zip(row["haystack_dates"], row["haystack_sessions"]), key=lambda d: parse_date(d[0]))
+    parts = []
+    for n, (date, session) in enumerate(sessions, 1):
+        lines = "\n".join(f"{t['role']}: {t['content']}" for t in session)
+        parts.append(f"### Session {n} ({date})\n{lines}")
+    return "\n\n".join(parts)
+
+
 def ingest(agent, row: dict, notify=None) -> dict:
     """Feed a question's history through sora's memory, oldest session first.
     Returns counts (sessions, exchanges, consolidations)."""
@@ -115,6 +140,7 @@ class LongMemEval:
     parallel = 5                                   # questions at once, each in its own home
     settings = {"browser": False}                  # no web pages in this test: skip starting a browser
     closed_book = False
+    full_context = False                           # the history goes into the prompt; no memory system
 
     def __init__(self, grader, grader_model: str):
         self.grader, self.grader_model = grader, grader_model
@@ -128,6 +154,10 @@ class LongMemEval:
     def case(self, item: Item) -> dict:
         row = self.rows[item.id]
         case = {"message": row["question"], "now": parse_date(row["question_date"])}
+        if self.full_context:
+            case["message"] = FULL_CONTEXT.format(history=history_text(row), date=row["question_date"],
+                                                  question=row["question"])
+            return case
         if not self.closed_book:
             case["prepare"] = lambda agent, tracer, run_id, _row=row: self._prepare(agent, tracer, run_id, _row)
         return case

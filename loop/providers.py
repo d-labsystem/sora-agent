@@ -174,6 +174,10 @@ class AnthropicProvider:
     name = "anthropic"
     capabilities = dict.fromkeys(CAPABILITIES, True)
     max_output = MAX_TOKENS          # per call; the harness lowers it (a runaway reply can't cost more)
+    # Cache the conversation so the next step reads it at 1/10 the price. A cache write costs
+    # 1.25x, so a prompt sent once only pays more: LongMemEval full-context (2026-11-17) wrote
+    # 167k tokens to the cache per question and never read them, $0.17 of each $0.84.
+    cache_conversation = True
 
     def __init__(self, client):
         self.client = client
@@ -191,7 +195,7 @@ class AnthropicProvider:
             model=model, max_tokens=self.max_output, system=system, messages=messages,
             tools=tools, output_config={"effort": effort},
             betas=betas, fallbacks="default",   # a declined request is retried on another model
-            cache_control=AUTO_CACHE, **extra,
+            **({"cache_control": AUTO_CACHE} if self.cache_conversation else {}), **extra,
         ) as stream:
             for delta in stream.text_stream:
                 on_text(delta)

@@ -104,6 +104,7 @@ class Settings:
     # allows 64,000, and one runaway reply at that size cost $1.28 that no budget could stop.
     max_output_tokens: int = 16_000
     long_max_output_tokens: int = 32_000    # long tasks write longer
+    cache_conversation: bool = True         # off for one-off prompts (a cache write costs 1.25x)
     history_turns: int = 10
     consolidate_every: int = 6
     web_tools: bool = True
@@ -189,6 +190,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         compact_at=int(os.getenv("SORA_COMPACT_AT", d.compact_at)),
         max_output_tokens=int(os.getenv("SORA_MAX_OUTPUT_TOKENS", d.max_output_tokens)),
         long_max_output_tokens=int(os.getenv("SORA_LONG_MAX_OUTPUT_TOKENS", d.long_max_output_tokens)),
+        cache_conversation=_flag("SORA_CACHE_CONVERSATION", d.cache_conversation),
         history_turns=int(os.getenv("SORA_HISTORY_TURNS", d.history_turns)),
         consolidate_every=int(os.getenv("SORA_CONSOLIDATE_EVERY", d.consolidate_every)),
         web_tools=_flag("SORA_WEB_TOOLS", d.web_tools),
@@ -607,6 +609,8 @@ class Sora:
 
                 # 5. the loop
                 self.provider.max_output = s.long_max_output_tokens if long else s.max_output_tokens
+                if hasattr(self.provider, "cache_conversation"):
+                    self.provider.cache_conversation = s.cache_conversation
                 result = run_loop(self.provider, self.model_id, system, messages, self.registry, notify,
                                   effort=s.effort,
                                   max_iterations=s.long_iterations if long else s.max_iterations,

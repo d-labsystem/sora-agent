@@ -447,6 +447,8 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     bn.add_argument("name", choices=["frames", "gaia", "browsecomp", "longmemeval"])
     bn.add_argument("--bare", action="store_true",
                     help="the same model and tools without sora's harness, to measure what the harness adds")
+    bn.add_argument("--full-context", action="store_true",
+                    help="longmemeval: the whole chat history in the prompt and no memory system (the paper's baseline)")
     bn.add_argument("--closed-book", action="store_true",
                     help="the model alone, no tools: a high score means the answers were memorised")
     bn.add_argument("--n", type=int, default=50, help="questions to sample (0 = all)")
@@ -495,7 +497,7 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
         from ops import bench
         keep_awake()
         return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare,
-                          closed_book=args.closed_book, ids=args.ids)
+                          closed_book=args.closed_book, ids=args.ids, full_context=args.full_context)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

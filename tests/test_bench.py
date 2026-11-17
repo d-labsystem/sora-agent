@@ -222,3 +222,42 @@ def GRADE_for(bench, kind):
                               {"correct": True, "reason": "r"})
     bench.grade(item, {"reply": "r"})
     return captured["p"]
+
+
+def test_full_context_puts_every_dated_session_in_the_prompt_and_skips_memory():
+    from ops.bench.longmemeval import LongMemEval
+    bench = LongMemEval(None, "haiku")
+    bench.rows = {"q1": lme_row()}
+    bench.full_context = True
+    case = bench.case(runner.Item("q1", "When did I get the cat?", "20 May 2023", {"type": "temporal-reasoning"}))
+    msg = case["message"]
+    assert "prepare" not in case and case["now"].year == 2023          # no ingestion, same "as of" date
+    assert msg.index("### Session 1 (2023/05/20") < msg.index("### Session 2 (2023/05/25")   # oldest first
+    assert "user: I adopted a cat, Miso" in msg and "assistant: Cute!" in msg
+    assert msg.rstrip().endswith("Question: When did I get the cat?")
+    assert "Current date: 2023/05/30 (Tue) 23:40" in msg
+
+
+def test_an_account_error_stops_the_run_and_is_not_scored(tmp_path):
+    (tmp_path / "test.tsv").write_text(ROWS, encoding="utf-8")
+    gate = {"retrieve": False, "query": "", "correction": False, "complex": False, "reason": "q"}
+    bench = Frames(FakeClient(small={"extracted_final_answer": "x", "reasoning": "r", "correct": True}), "haiku")
+    tracer = Tracer(tmp_path / "traces.db")
+
+    def broke(request):
+        raise RuntimeError("Error code: 400 - Your credit balance is too low to access the Anthropic API.")
+    factory = lambda home, tr: Sora(Settings(home=home, memory_mirror=False, workspace=False),
+                                    FakeClient(broke, small=gate), tracer=tr, connect_mcp=False)
+    summary = runner.run(bench, bench.load(tmp_path), factory, tracer, budget_usd=10.0)
+    assert summary["cases"] == 0 and "credit balance" in summary["stopped_by_account"]
+    assert "STOPPED: the API refused the account after 0 of 3" in runner.report(summary)
+
+
+def test_conversation_caching_can_be_turned_off_for_one_off_prompts():
+    from loop.providers import AnthropicProvider
+    client = FakeClient([message(text("a")), message(text("b"))])
+    provider = AnthropicProvider(client)
+    provider.step("m", "sys", [{"role": "user", "content": "hi"}], [], "low", lambda d: None)
+    provider.cache_conversation = False
+    provider.step("m", "sys", [{"role": "user", "content": "hi"}], [], "low", lambda d: None)
+    assert "cache_control" in client.requests[0] and "cache_control" not in client.requests[1]
