@@ -94,6 +94,10 @@ class Settings:
     home: Path
     model: str = "claude-opus-5-5"
     small_model: str = "claude-haiku-5-5"   # gate, consolidation, reflection, judge
+    # The eval and benchmark grader, when it must not follow small_model: with a small open
+    # model running sora (2026-11-17), it would otherwise grade its own answers, and scores
+    # couldn't be compared with earlier runs graded by Haiku. Empty: small_model.
+    judge_model: str = ""
     effort: str = "medium"
     max_iterations: int = 10
     # Long-task mode (ask --long, the dashboard toggle, "long": true in evals)
@@ -183,6 +187,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         home=home,
         model=os.getenv("SORA_MODEL", d.model),
         small_model=os.getenv("SORA_SMALL_MODEL", d.small_model),
+        judge_model=os.getenv("SORA_JUDGE_MODEL", d.judge_model),
         effort=os.getenv("SORA_EFFORT", d.effort),
         max_iterations=int(os.getenv("SORA_MAX_ITERATIONS", d.max_iterations)),
         long_iterations=int(os.getenv("SORA_LONG_ITERATIONS", d.long_iterations)),
@@ -755,9 +760,10 @@ def eval_setup(**overrides):
     settings for every case (e.g. bare=True for the baseline)."""
     settings = load_settings()
     tracer = Tracer(settings.home / "traces.db")
+    judge = settings.judge_model or settings.small_model
     client = new_anthropic_client() if "anthropic" in {split_model(m)[0] for m in
-                                                       (settings.model, settings.small_model)} else None
-    judge_provider, judge_model = Providers(client).get(settings.small_model)
+                                                       (settings.model, settings.small_model, judge)} else None
+    judge_provider, judge_model = Providers(client).get(judge)
 
     embedder = Embedder(settings.models_dir, settings.embedding_model) if settings.embeddings else None
 

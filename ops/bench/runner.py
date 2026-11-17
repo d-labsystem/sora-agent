@@ -105,7 +105,8 @@ def wilson(correct: int, total: int, z: float = 1.96) -> tuple[float, float]:
 # Errors that no other question will get past: the account, not the question. Seen
 # 2026-11-17: the credit ran out mid-run and 155 questions were logged as "wrong".
 ACCOUNT_ERRORS = ("credit balance is too low", "authentication_error", "invalid x-api-key",
-                  "permission_error", "billing", "no valid api key")
+                  "permission_error", "billing", "no valid api key",
+                  "needs credits", "(402)", "insufficient_quota")       # Hugging Face, OpenAI
 
 
 def account_error(result: dict) -> str:

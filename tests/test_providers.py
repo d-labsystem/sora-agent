@@ -404,3 +404,18 @@ def test_responses_ask_json():
     assert client.requests[0]["text"]["format"]["schema"] == fmt["schema"]
     with pytest.raises(NoAnswer):
         ask_json(p, "gpt-5.4-mini", "q", fmt)
+
+
+def test_the_judge_can_stay_fixed_when_the_small_model_changes(tmp_path, monkeypatch):
+    from harness import app
+    monkeypatch.setattr(app, "new_anthropic_client", lambda: FakeClient())
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+    monkeypatch.setattr(providers, "_openai_client", lambda **kw: FakeOpenAI())
+    monkeypatch.setenv("SORA_HOME", str(tmp_path))
+    monkeypatch.setenv("SORA_SMALL_MODEL", "hf:Qwen/Qwen3.5-9B")
+    monkeypatch.setenv("SORA_JUDGE_MODEL", "claude-haiku-5-5")
+    _, judge_provider, _, judge_model, _ = app.eval_setup()
+    assert judge_model == "claude-haiku-5-5" and judge_provider.name == "anthropic"
+    monkeypatch.delenv("SORA_JUDGE_MODEL")
+    _, judge_provider, _, judge_model, _ = app.eval_setup()
+    assert judge_model == "Qwen/Qwen3.5-9B" and judge_provider.name == "hf"      # default: follows small_model

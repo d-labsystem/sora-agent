@@ -253,6 +253,14 @@ def test_an_account_error_stops_the_run_and_is_not_scored(tmp_path):
     assert "STOPPED: the API refused the account after 0 of 3" in runner.report(summary)
 
 
+def test_account_errors_are_recognised_across_providers():
+    for error in ("BadRequestError: Your credit balance is too low",
+                  "hf needs credits on the account (402): Purchase pre-paid credits",
+                  "RateLimitError: insufficient_quota", "No valid API key. Add ANTHROPIC_API_KEY"):
+        assert runner.account_error({"error": error})
+    assert not runner.account_error({"error": "TimeoutError: the call took too long"})
+
+
 def test_conversation_caching_can_be_turned_off_for_one_off_prompts():
     from loop.providers import AnthropicProvider
     client = FakeClient([message(text("a")), message(text("b"))])
