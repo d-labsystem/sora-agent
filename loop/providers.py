@@ -394,10 +394,14 @@ class OpenAICompatProvider:
 
     capabilities = {**dict.fromkeys(CAPABILITIES, False)}
 
-    def __init__(self, client, name: str = "openai", openai_params: bool = True):
+    def __init__(self, client, name: str = "openai", openai_params: bool = True, reasoning_effort: str = ""):
         self.client = client
         self.name = name
         self.openai_params = openai_params
+        # For servers other than OpenAI's: a fixed reasoning_effort sent with every call. Qwen3.5
+        # thinks by default; on Hugging Face (2026-11-17) every memory-building call spent its
+        # 4,096 output tokens thinking and was cut off before answering. "none" turns it off.
+        self.reasoning_effort = reasoning_effort
         self.no_effort_with_tools: set[str] = set()
 
     def server_tool_specs(self, web, code):
@@ -405,7 +409,8 @@ class OpenAICompatProvider:
 
     def _limits(self, model: str, effort: str | None, max_tokens: int, tools: bool = False) -> dict:
         if not self.openai_params:
-            return {"max_tokens": max_tokens}
+            return {"max_tokens": max_tokens,
+                    **({"reasoning_effort": self.reasoning_effort} if self.reasoning_effort else {})}
         params: dict[str, Any] = {"max_completion_tokens": max_tokens}
         # Only reasoning models take an effort; sending it to others is an error.
         if effort and model.startswith(("gpt-5", "o1", "o3", "o4")) \
@@ -761,7 +766,8 @@ def build(kind: str, anthropic_client=None) -> Provider:
         if not token:
             raise RuntimeError("Hugging Face models need HF_TOKEN in .env")
         return OpenAICompatProvider(_openai_client(base_url=os.getenv("SORA_HF_BASE_URL", HF_BASE_URL),
-                                                   api_key=token), "hf", openai_params=False)
+                                                   api_key=token), "hf", openai_params=False,
+                                    reasoning_effort=os.getenv("SORA_HF_REASONING_EFFORT", ""))
     if kind == "local":
         base = os.getenv("SORA_LOCAL_BASE_URL")
         if not base:

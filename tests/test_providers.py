@@ -419,3 +419,13 @@ def test_the_judge_can_stay_fixed_when_the_small_model_changes(tmp_path, monkeyp
     monkeypatch.delenv("SORA_JUDGE_MODEL")
     _, judge_provider, _, judge_model, _ = app.eval_setup()
     assert judge_model == "Qwen/Qwen3.5-9B" and judge_provider.name == "hf"      # default: follows small_model
+
+
+def test_hf_models_can_have_thinking_turned_off(monkeypatch):
+    monkeypatch.setattr(providers, "_openai_client", lambda **kw: FakeOpenAI())
+    monkeypatch.setenv("HF_TOKEN", "test-token")
+    monkeypatch.setenv("SORA_HF_REASONING_EFFORT", "none")
+    hf = providers.build("hf")
+    assert hf._limits("Qwen/Qwen3.5-9B", "low", 100) == {"max_tokens": 100, "reasoning_effort": "none"}
+    monkeypatch.delenv("SORA_HF_REASONING_EFFORT")
+    assert providers.build("hf")._limits("Qwen/Qwen3.5-9B", "low", 100) == {"max_tokens": 100}   # unchanged default
