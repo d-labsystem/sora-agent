@@ -247,3 +247,19 @@ img.drawing { max-width: 100%; max-height: 420px; display: block; background: #f
 .sandbox-image { max-width: 100%; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: #fff; }
 .msg .draft { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .msg .draft .what { flex: 1; font-size: 13px; }
+
+/* judge check */
+.judge-progress { display: flex; gap: 8px; align-items: center; }
+.meter { height: 4px; background: var(--line); border-radius: 2px; margin: 8px 0 4px; overflow: hidden; }
+.meter span { display: block; height: 100%; background: var(--accent); }
+.label-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+#run-detail h4 { margin: 14px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.label-text { white-space: pre-wrap; word-break: break-word; background: var(--code); border-radius: 8px; padding: 9px 12px; max-height: 320px; overflow-y: auto; }
+.label-text.ref { background: var(--user); }
+.label-actions { display: flex; gap: 8px; margin: 10px 0; }
+.label-btn.ok { border-color: var(--ok); } .label-btn.bad { border-color: var(--bad); }
+.label-btn.picked { font-weight: 600; box-shadow: 0 0 0 2px var(--accent); }
+kbd { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+#run-detail textarea { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.label-text.reply { white-space: normal; } .label-text.reply p { margin: 0 0 6px; }
+#run-detail pre.report { white-space: pre; overflow-x: auto; }

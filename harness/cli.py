@@ -418,6 +418,34 @@ def keep_awake() -> None:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def judge_command(args, out: IO[str]) -> int:
+    from harness.app import load_settings
+    from ops.judge_check import JudgeCheck, benchmark_references, format_report
+    from ops.tracing import Tracer
+    settings = load_settings(args.home)
+    check = JudgeCheck(Tracer(settings.home / "traces.db"))
+    if args.action == "sample":
+        runs = [r.strip() for r in args.runs.split(",") if r.strip()]
+        if not runs:
+            out.write("give the runs to sample from: --runs bench-…,bench-… (see the Evals tab)\n")
+            return 1
+        try:
+            added = check.sample(runs, args.n, benchmark_references(settings.home), args.seed)
+        except (KeyError, ValueError) as exc:
+            out.write(f"{exc.args[0]}\n")
+            return 1
+        p = check.progress()
+        out.write(f"added {added} verdicts ({p['total']} in the set, {p['done']} labelled). "
+                  "Label them in the dashboard: Evals → Judge check.\n")
+        return 0
+    if args.action == "status":
+        p = check.progress()
+        out.write(f"{p['done']}/{p['total']} labelled, {p['unsure']} unsure\n")
+        return 0
+    out.write(format_report(check.report()) + "\n")
+    return 0
+
+
 def setup_logging(folder: Path) -> None:
     """Details (tracebacks, MCP failures) go to a log file, not over the chat."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -456,6 +484,11 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     bn.add_argument("--seed", type=int, default=0)
     bn.add_argument("--label", default="")
     bn.add_argument("--ids", default="", help="comma-separated question ids to run instead of a sample")
+    jc = sub.add_parser("judge", help="check the benchmark judge: sample its verdicts, you label them blind, see agreement")
+    jc.add_argument("action", choices=["sample", "status", "report"])
+    jc.add_argument("--runs", default="", help="sample: comma-separated eval run ids to draw verdicts from")
+    jc.add_argument("--n", type=int, default=60, help="sample: how many verdicts to add")
+    jc.add_argument("--seed", type=int, default=0)
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
@@ -498,6 +531,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
         keep_awake()
         return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare,
                           closed_book=args.closed_book, ids=args.ids, full_context=args.full_context)
+
+    if command == "judge":      # reads runs and labels in traces.db; no model calls
+        return judge_command(args, out)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

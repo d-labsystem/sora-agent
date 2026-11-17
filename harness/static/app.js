@@ -330,9 +330,84 @@ async function loadEvals() {
       el("td", { class: "num" }, money(r.cost_usd))));
   }
   if (!data.runs.length) rows.append(el("tr", {}, el("td", { colspan: 4, class: "muted" }, "No runs yet.")));
+  loadJudgeCheck();
 
 }
+// ---------- judge check: you label the judge's verdicts blind (ops/judge_check.py)
+const judge = { history: [] };                    // ids labelled this visit, for "back"
+async function loadJudgeCheck() {
+  let data;
+  try { data = await api("/api/judge-check"); } catch { return; }
+  const box = clear($("#judge-check"));          // cleared after the fetch, so two refreshes at once can't both append
+  const p = data.progress;
+  if (!p.total) {
+    box.append(el("p", { class: "muted small" }, "No sample yet. Create one in the terminal: ",
+      el("code", {}, "sora judge sample --runs RUN_ID,RUN_ID")));
+    return;
+  }
+  box.append(el("div", { class: "judge-progress" },
+    el("div", { class: "grow" }, el("strong", {}, `${p.done}/${p.total} labelled`),
+      el("div", { class: "sub" }, p.unsure ? `${p.unsure} unsure` : "blind: the judge's verdict stays hidden")),
+    el("button", { class: "primary", disabled: p.done >= p.total, onclick: () => openLabel() }, p.done ? "Continue" : "Start"),
+    el("button", { disabled: !p.done, title: p.done < p.total ? "Seeing it early can bias the rest of your labels" : "",
+      onclick: () => openJudgeReport(p) }, "Report")));
+  const bar = el("div", { class: "meter" }, el("span", { style: `width:${(100 * p.done / p.total).toFixed(1)}%` }));
+  box.append(bar);
+}
+async function openLabel(id) {
+  const data = await api("/api/judge-check" + (id != null ? `?id=${id}` : ""));
+  const pane = clear($("#run-detail"));
+  const it = data.item, p = data.progress;
+  if (!it) { pane.append(el("h3", {}, "All labelled."), el("button", { class: "primary", onclick: () => openJudgeReport(p) }, "See the report")); loadJudgeCheck(); return; }
+  const reply = el("div", { class: "label-text reply" });
+  setBody(reply, it.reply || "(no reply)");             // Markdown, as you'd see it in chat (escaped first)
+  const note = el("textarea", { rows: 2, placeholder: "Optional: why (e.g. right number, wrong unit)" });
+  note.value = it.note || "";
+  const save = async (human) => {
+    try {
+      await api("/api/judge-check", { method: "POST", body: { id: it.id, human, note: note.value } });
+      if (id == null) judge.history.push(it.id);
+      loadJudgeCheck(); openLabel();
+    } catch (e) { toast(e.message); }
+  };
+  const choice = (human, key, cls) => el("button", { class: "label-btn " + cls + (it.human === human ? " picked" : ""), onclick: () => save(human) },
+    `${human[0].toUpperCase() + human.slice(1)}  `, el("kbd", {}, key));
+  pane.append(
+    el("div", { class: "label-head" }, el("span", { class: "muted small" }, `${Math.min(p.done + (it.human ? 0 : 1), p.total)} of ${p.total} · ${it.kind || "case"}`),
+      judge.history.length && id == null ? el("button", { class: "link", onclick: () => openLabel(judge.history.pop()) }, "← back") : "",
+      id != null ? el("button", { class: "link", onclick: () => openLabel() }, "skip to next unlabelled →") : ""),
+    el("h4", {}, "Question"), el("div", { class: "label-text" }, it.question || "(question not found)"),
+    el("h4", {}, it.reference_label || "Correct answer"), el("div", { class: "label-text ref" }, it.reference || "–"),
+    el("h4", {}, "sora's reply"), reply,
+    el("p", { class: "muted small" }, "Is the reply correct, judged against the reference? Grade the answer, not the style."),
+    el("div", { class: "label-actions" }, choice("correct", "1", "ok"), choice("wrong", "2", "bad"), choice("unsure", "3", "")),
+    note);
+  judge.keys = (e) => {
+    if (document.activeElement === note || currentTab() !== "evals") return;
+    const human = { 1: "correct", 2: "wrong", 3: "unsure" }[e.key];
+    if (human) { e.preventDefault(); save(human); }
+  };
+}
+document.addEventListener("keydown", (e) => judge.keys?.(e));
+async function openJudgeReport(p) {
+  if (p && p.done < p.total && !confirm(`Only ${p.done} of ${p.total} labelled. Seeing the judge's verdicts now can bias the rest. Show anyway?`)) return;
+  judge.keys = null;
+  const r = await api("/api/judge-check/report");
+  const pane = clear($("#run-detail"));
+  pane.append(el("h3", {}, "Judge check report"), el("pre", { class: "report" }, r.text));
+  if (r.disagreements.length) {
+    pane.append(el("h4", {}, `Where you and the judge disagree (${r.disagreements.length})`));
+    for (const d of r.disagreements) pane.append(el("div", { class: "span" },
+      el("div", {}, el("strong", { class: d.judge === "PASS" ? "bad" : "warn" }, d.judge === "PASS" ? "too lenient " : "too strict "),
+        `${d.case_id} · ${d.kind} · judge ${d.judge}, you ${d.human} `,
+        el("button", { class: "link", onclick: () => openLabel(d.id) }, "relabel"),
+        d.turn_id ? el("button", { class: "link", onclick: () => openTrace(d.turn_id) }, "trace ↗") : ""),
+      el("div", { class: "small muted" }, `Judge: ${d.judge_reason}`), d.note ? el("div", { class: "small" }, `You: ${d.note}`) : ""));
+  }
+}
+
 async function openRun(id) {
+  judge.keys = null;
   const run = await api(`/api/evals/${id}`);
   const pane = clear($("#run-detail"));
   pane.append(el("h3", {}, `${run.dataset} · ${run.passed}/${run.cases} passed · ${money(run.cost_usd)}`));

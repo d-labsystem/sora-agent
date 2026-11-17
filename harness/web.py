@@ -49,6 +49,7 @@ from memory.learning import LessonStore
 from memory import mirror
 from memory.backends import open_memory
 from ops.evals import load_cases, run_eval
+from ops.judge_check import JudgeCheck, format_report
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -79,6 +80,7 @@ class Dashboard:
         if agent.settings.memory_mirror:
             mirror.attach(self.memory, agent.settings.home / "MEMORY.md")
         self.lessons = LessonStore(path)
+        self.judge = JudgeCheck(agent.tracer)
         self.read_lock = threading.Lock()
         self.eval_lock = threading.Lock()
         self.eval_running: str | None = None
@@ -262,6 +264,12 @@ def make_handler(dash: Dashboard):
                     return self._json({"facts": dash.memory.list_facts(),
                                        "episodes": dash.memory.list_episodes(),
                                        "lessons": dash.lessons.list()})
+            if name == "judge-check":
+                if rest == ["report"]:
+                    report = dash.judge.report()
+                    return self._json({**report, "text": format_report(report)})
+                label_id = int(q["id"]) if q.get("id", "").isdigit() else None
+                return self._json({"progress": dash.judge.progress(), "item": dash.judge.item(label_id)})
             if name == "evals":
                 if rest:
                     run = tracer.eval_run(rest[0])
@@ -319,6 +327,9 @@ def make_handler(dash: Dashboard):
                     return self._json(agent.judge_turn(str(body.get("turn_id"))))
                 if parts == ["api", "to-eval"]:
                     return self._json(agent.add_to_evals(str(body.get("turn_id"))))
+                if parts == ["api", "judge-check"]:
+                    return self._json(dash.judge.label(int(body.get("id", -1)), str(body.get("human")),
+                                                       str(body.get("note") or "")))
                 if parts == ["api", "evals", "run"]:
                     dash.start_eval(str(body.get("dataset")))
                     return self._json({"started": body.get("dataset")}, 202)

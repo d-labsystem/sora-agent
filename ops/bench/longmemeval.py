@@ -172,11 +172,16 @@ class LongMemEval:
                            f"{counts['consolidations']} consolidations, {len(agent.store.list_facts())} facts", "ok")
         return done.get("cost_usd") or 0.0
 
+    @staticmethod
+    def reference_label(item: Item) -> str:
+        """What the reference is: an answer, a rubric (preferences) or why no answer exists (abstentions)."""
+        return {"single-session-preference": "Rubric", "abstention": "Explanation"}.get(
+            item.meta.get("type", ""), "Correct answer")
+
     def grade(self, item: Item, turn: dict) -> dict:
         kind = item.meta["type"]
         prompt = GRADE.format(rule=RULES.get(kind, GENERIC), question=item.question,
-                              label={"single-session-preference": "Rubric", "abstention": "Explanation"}
-                              .get(kind, "Correct answer"),
+                              label=self.reference_label(item),
                               answer=item.answer, response=(turn.get("reply") or "(no reply)")[:6000])
         verdict = ask_json(self.grader, self.grader_model, prompt, VERDICT, name="grader", max_tokens=1024)
         ok = bool(verdict["correct"])
