@@ -1,0 +1,51 @@
+# CI: on every push and pull request, run the tests on a clean Linux machine and
+# scan the history for secrets. Needs no API keys: tests that need a model, Docker,
+# Chrome or macOS skip themselves (see the skipif markers in tests/).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:                       # for the pgvector and LangGraph memory backend tests
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      SORA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install (exactly the locked versions)
+        run: uv sync --frozen --extra providers --extra otel --extra bench --extra memory-pg --extra memory-langmem
+      - name: Tests
+        run: uv run --frozen pytest -q -rs
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0              # the whole history: a key removed later is still public
+      - name: Scan for secrets (gitleaks)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.18.4 \
+            detect --source /repo --config /repo/.gitleaks.toml --no-banner --redact --verbose \
+            --gitleaks-ignore-path /repo/.gitleaksignore

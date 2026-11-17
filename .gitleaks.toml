@@ -1,0 +1,49 @@
+# Secret scanning rules for sora: gitleaks' built-in rules, plus one rule for each
+# kind of key sora uses. The built-in rules missed Anthropic and OpenAI project keys
+# when tested with fake keys (2026-11-17), so these are explicit.
+title = "sora"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "anthropic-key"
+description = "Anthropic API or admin key"
+regex = '''sk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_\-]{80,}'''
+keywords = ["sk-ant-"]
+
+[[rules]]
+id = "openai-key"
+description = "OpenAI project, service-account or admin key"
+regex = '''sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}'''
+keywords = ["sk-proj-", "sk-svcacct-", "sk-admin-"]
+
+[[rules]]
+id = "langfuse-key"
+description = "Langfuse public or secret key"
+regex = '''(?:pk|sk)-lf-[A-Za-z0-9\-]{20,}'''
+keywords = ["pk-lf-", "sk-lf-"]
+
+[[rules]]
+id = "huggingface-token"
+description = "Hugging Face access token"
+regex = '''hf_[A-Za-z0-9]{30,}'''
+keywords = ["hf_"]
+
+[[rules]]
+id = "langsmith-key"
+description = "LangSmith key"
+regex = '''lsv2_(?:pt|sk)_[A-Za-z0-9_]{20,}'''
+keywords = ["lsv2_"]
+
+[[rules]]
+id = "twilio-account-sid"
+description = "Twilio account SID"
+regex = '''\bAC[0-9a-f]{32}\b'''
+keywords = ["AC"]
+
+[[rules]]
+id = "meta-access-token"
+description = "Meta (WhatsApp) access token"
+regex = '''\bEAA[A-Za-z0-9]{50,}'''
+keywords = ["EAA"]

@@ -1,0 +1,6 @@
+# Known findings that are acknowledged, so the secret scan passes on old history.
+# 4717dbe (2026-11-16): Langfuse public and secret keys typed into .env.example and
+# pushed; removed in 2e9aab3. They must be revoked in Langfuse. A key listed here is
+# still in the repository's history: list only keys that no longer work.
+4717dbe450265b91192e68229a9a982bbab95d58:.env.example:langfuse-key:54
+4717dbe450265b91192e68229a9a982bbab95d58:.env.example:langfuse-key:55
