@@ -405,6 +405,19 @@ def memory_command(args, out: IO[str]) -> int:
     return 0
 
 
+def keep_awake() -> None:
+    """Keep the Mac from idle-sleeping while this process runs (a benchmark can
+    take an hour): `caffeinate -i -s -w <pid>` ends by itself when we exit.
+    A LongMemEval run stalled overnight when the Mac slept (2026-11-16). It
+    can't stop sleep from closing the lid on battery."""
+    import os
+    import shutil
+    import subprocess
+    if sys.platform == "darwin" and shutil.which("caffeinate"):
+        subprocess.Popen(["caffeinate", "-i", "-s", "-w", str(os.getpid())],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def setup_logging(folder: Path) -> None:
     """Details (tracebacks, MCP failures) go to a log file, not over the chat."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -480,6 +493,7 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "bench":      # builds its own agents, one per question
         from ops import bench
+        keep_awake()
         return bench.main(args.name, args.n, args.budget, args.seed, args.label, out, bare=args.bare,
                           closed_book=args.closed_book, ids=args.ids)
 

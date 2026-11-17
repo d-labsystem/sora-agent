@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 from loop.agent import run_loop
 from loop.helpers import Helpers
-from loop.providers import ProviderError, Providers, split_model
+from loop.providers import ProviderError, Providers, new_anthropic_client, split_model
 from memory.consolidation import consolidate
 from memory.gate import GateResult, recall
 from memory.embeddings import DEFAULT_MODEL, Embedder
@@ -751,7 +751,7 @@ def eval_setup(**overrides):
     settings for every case (e.g. bare=True for the baseline)."""
     settings = load_settings()
     tracer = Tracer(settings.home / "traces.db")
-    client = anthropic.Anthropic() if "anthropic" in {split_model(m)[0] for m in
+    client = new_anthropic_client() if "anthropic" in {split_model(m)[0] for m in
                                                        (settings.model, settings.small_model)} else None
     judge_provider, judge_model = Providers(client).get(settings.small_model)
 

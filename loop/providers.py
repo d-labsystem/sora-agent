@@ -711,20 +711,44 @@ def split_model(spec: str) -> tuple[str, str]:
     return "anthropic", spec
 
 
+# How long one API call may wait before it is retried. The SDKs' default read timeout is
+# 600 s: when the Mac slept mid-call (LongMemEval, 2026-11-16, 00:20), five calls sat on
+# dead connections and the run stalled until morning, since each would be noticed only
+# after 10 minutes, and retried just twice. 120 s is far above a normal gap: streamed
+# replies send pings while the server works, and small JSON calls finish in under a minute.
+API_TIMEOUT = float(os.getenv("SORA_API_TIMEOUT", "120"))
+API_RETRIES = int(os.getenv("SORA_API_RETRIES", "4"))   # with the SDK's backoff between tries
+
+
+def api_timeout(sdk, read: float | None = None):
+    """`sdk.Timeout`: each SDK takes its own httpx's Timeout (anthropic uses httpx2)."""
+    read = API_TIMEOUT if read is None else read
+    return sdk.Timeout(read, connect=min(10.0, read))
+
+
+def new_anthropic_client(timeout: float | None = None, max_retries: int | None = None, **kwargs):
+    """The Anthropic client sora uses everywhere: short timeouts, more retries."""
+    import anthropic
+    return anthropic.Anthropic(timeout=api_timeout(anthropic, timeout),
+                               max_retries=API_RETRIES if max_retries is None else max_retries, **kwargs)
+
+
 def _openai_client(**kwargs):
     try:
         from openai import OpenAI
     except ImportError:
         raise RuntimeError("OpenAI-compatible models need the openai package: "
                            "uv sync --extra providers") from None
+    import openai
+    kwargs.setdefault("timeout", api_timeout(openai))
+    kwargs.setdefault("max_retries", API_RETRIES)
     return OpenAI(**kwargs)
 
 
 def build(kind: str, anthropic_client=None) -> Provider:
     if kind == "anthropic":
         if anthropic_client is None:
-            import anthropic
-            anthropic_client = anthropic.Anthropic()
+            anthropic_client = new_anthropic_client()
         return AnthropicProvider(anthropic_client)
     if kind == "openai":
         return OpenAIResponsesProvider(_openai_client())
