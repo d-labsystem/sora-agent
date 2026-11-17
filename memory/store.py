@@ -200,6 +200,9 @@ class MemoryStore:
     def search_facts(self, query: str, top_k: int = 5, dated: bool = False) -> list[str]:
         return self.semantic.search_facts(query, top_k, dated)
 
+    def related_facts(self, queries: list[str], top_k: int = 5) -> list[dict]:
+        return self.semantic.related_facts(queries, top_k)
+
     # ---- past conversations, word for word
 
     def search_messages(self, query: str, top_k: int = 5, exclude_session: str | None = None,

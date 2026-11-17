@@ -1,9 +1,11 @@
 """Consolidation: when it runs, what it saves, and that failure loses nothing."""
 
+import re
+
 import pytest
 
 from fake import FakeClient
-from memory.consolidation import consolidate
+from memory.consolidation import KNOWN_FACTS, consolidate
 from memory.store import MemoryStore
 
 
@@ -61,7 +63,21 @@ def test_known_facts_are_shown_and_duplicates_skipped(store):
     chat(store, sid, 6)
     result = consolidate(store, client, "m", sid)
     assert result["facts"] == ["Alex prefers trains"]
-    assert "- Priya lives in Pune" in client.small_requests[0]["messages"][0]["content"]
+    assert re.search(r"- \(\d{4}-\d\d-\d\d\) Priya lives in Pune", client.small_requests[0]["messages"][0]["content"])
+
+
+def test_the_writer_sees_related_facts_even_when_old(store):
+    """It used to see only the 40 newest, which needn't include the one being talked about."""
+    store.add_fact("Jo's pre-1920 coin collection has 37 coins", "consolidation", "2023-05-27 10:00:00")
+    for i in range(KNOWN_FACTS + 5):
+        store.add_fact(f"Jo plans errand number {i} downtown")
+    sid = store.ensure_session(None, "x")
+    store.add_exchange(sid, "I just added a quarter to my pre-1920 coin collection!", "Nice!")
+    client = FakeClient(small={"facts": [], "episode": ""})
+    consolidate(store, client, "m", sid, force=True)
+    prompt = client.small_requests[0]["messages"][0]["content"]
+    assert "- (2023-05-27) Jo's pre-1920 coin collection has 37 coins" in prompt
+    assert prompt.count("\n- (") == KNOWN_FACTS
 
 
 def test_only_this_session_is_consolidated(store):
@@ -72,3 +88,5 @@ def test_only_this_session_is_consolidated(store):
     consolidate(store, client, "m", a)
     assert store.unconsolidated(a) == [] and len(store.unconsolidated(b)) == 12
     assert "message 0" in client.small_requests[0]["messages"][0]["content"]
+
+

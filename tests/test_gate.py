@@ -129,4 +129,5 @@ def test_memory_section_carries_the_answer_rules_and_the_all_note():
     text = lambda found: build_system("soul", datetime(2026, 11, 16), "", [], [], found)[1]["text"]
     assert MEMORY_RULES in text(one) and "every relevant mention" not in text(one)
     assert "every relevant mention" in text(every)
-    assert "give it plainly first" in MEMORY_RULES and "Never add people" in MEMORY_RULES
+    assert "give it plainly" in MEMORY_RULES and "Never add people" in MEMORY_RULES
+    assert "work it out in a line first, then state the result" in MEMORY_RULES

@@ -51,7 +51,7 @@ def test_full_turn_with_memory_tools_and_trace(tmp_path):
                               "within_budget": True}
     # memory recall reached the system prompt as labelled data
     system = system_text(client.requests[0]["system"])
-    assert "## Memory" in system and re.search(r"- \(\d{4}-\d\d-\d\d\) Aryan lives in Pune", system)   # dated
+    assert "## Memory" in system and re.search(r"- \(\d{4}-\d\d-\d\d, today\) Aryan lives in Pune", system)   # dated
     assert "## Skills" in system and "research-brief" in system
     # the tool ran and was traced with provenance
     assert any("masala chai" in f["content"] and f["source"] == f"remember:{turn['id']}"
@@ -186,7 +186,24 @@ def test_status_and_system_prompt_order(tmp_path):
     assert "Current local time" not in blocks[0]["text"] and "## Memory" not in blocks[0]["text"]
     later = build_system("SOUL", datetime(2026, 11, 9, 10, 1), "- s: d", [], [], None)
     assert later[0] == blocks[0]                       # a minute later: the cached prefix is identical
-    assert "Past conversations:\n- (2026-11-01) e1" in system
+    assert "Past conversations:\n- (2026-11-01, 8 days before today) e1" in system
+
+
+def test_memory_is_shown_oldest_first_with_days_before_today():
+    """Relevance order put "37 coins" above "added a quarter" and January's "5 women" above
+    July's "6 women"; Qwen3.5-9B answered with the older one both times (2026-11-17)."""
+    from datetime import datetime
+    from harness.app import in_date_order
+    now = datetime(2023, 6, 9, 11, 14)
+    found = ["(2023-05-29) added a 1915-S quarter", "undated note", "(2023-05-27) 37 coins",
+             "(2023-06-09) said today", "(2023-06-08) one day ago"]
+    assert in_date_order(found, now) == [
+        "(2023-05-27, 13 days before today) 37 coins", "(2023-05-29, 11 days before today) added a 1915-S quarter",
+        "(2023-06-08, 1 day before today) one day ago", "(2023-06-09, today) said today", "undated note"]
+    blocks = build_system("SOUL", now, "", [], [], GateResult(True, "q", False, "r",
+                          facts=["(2023-07-20) 6 women", "(2023-01-18) 5 women"]))
+    system = system_text(blocks)
+    assert system.index("5 women") < system.index("6 women") and "oldest first" in system
 
 
 def test_explain_messages():

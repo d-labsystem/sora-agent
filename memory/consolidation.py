@@ -9,6 +9,18 @@ reads the messages it hasn't processed yet and writes two things:
     episode   one dated sentence about what happened in this stretch
               ("Planned a weekend trip to Pune with Priya")
 
+The writer sees the known facts related to what the user said (searched), then the
+newest, so it can skip what's already known. It used to see only the 40 newest. LongMemEval-S,
+2026-11-17: "how many pre-1920 coins do I have?" needed "37 coins" (said a week earlier) next
+to "just added a 1915-S quarter", and with a big memory the 40 newest needn't include it.
+
+Memory only grows: an update is stored as a new, dated fact next to the old one, and
+recall shows them oldest first (harness/app.py), so the newest reads as current. Making a
+9B writer *replace* facts was tried and dropped (2026-11-17): asked inside this prompt, it
+never did; asked as a separate yes/no per fact, it said yes to nearly anything ("two cameras
+and a nickel added" made the coin count 39) and overwrote true facts; limited to close
+matches and made additive, it was safe but changed nothing in the cases it was built for.
+
 This mirrors how people sleep on a day: the details fade, the gist and the
 durable facts stay. Neuroscience calls it memory consolidation, hence the name.
 
@@ -28,7 +40,8 @@ log = logging.getLogger(__name__)
 
 EVERY = 6               # exchanges, i.e. 12 messages
 MAX_CHARS = 2000        # per message, so one huge paste can't blow the budget
-KNOWN_FACTS = 40        # most recent facts shown to avoid repeats
+KNOWN_FACTS = 40        # facts shown to the writer: related ones first, then the newest
+RELATED = 5             # related facts found per user message
 
 CONSOLIDATION_FORMAT = schema({
     "facts": {"type": "array", "items": {"type": "string"}},
@@ -45,7 +58,7 @@ one-off requests, things the assistant said that the user did not confirm,
 and anything already in the known facts. Return [] if nothing is worth keeping.
 episode: one sentence on what happened or was decided in this excerpt.
 
-Known facts:
+Known facts (with the day each was learned):
 {known}
 
 Conversation:
@@ -54,6 +67,20 @@ Conversation:
 
 def _transcript(rows) -> str:
     return "\n".join(f"{r['role'].title()}: {r['content'][:MAX_CHARS]}" for r in rows)
+
+
+def known_facts(store: MemoryStore, rows) -> list[dict]:
+    """What the writer sees, so it doesn't repeat them: facts related to what the user said
+    here, then the newest, up to KNOWN_FACTS (it used to be only the 40 newest)."""
+    said = [r["content"][:MAX_CHARS] for r in rows if r["role"] == "user"]
+    known = store.related_facts(said, RELATED)[:KNOWN_FACTS]
+    seen = {str(k["id"]) for k in known}
+    for f in store.list_facts():
+        if len(known) >= KNOWN_FACTS:
+            break
+        if str(f["id"]) not in seen:
+            known.append({"id": f["id"], "text": f["content"], "created_at": f["created_at"]})
+    return known
 
 
 def consolidate(store: MemoryStore, client, model: str, session_id: str,
@@ -66,8 +93,8 @@ def consolidate(store: MemoryStore, client, model: str, session_id: str,
     rows = store.unconsolidated(session_id)
     if not rows or (not force and len(rows) < every * 2):
         return None
-    known = [f["content"] for f in store.list_facts()[:KNOWN_FACTS]]
-    prompt = PROMPT.format(known="\n".join(f"- {k}" for k in known) or "(none)",
+    known = known_facts(store, rows)
+    prompt = PROMPT.format(known="\n".join(f"- ({k['created_at'][:10]}) {k['text']}" for k in known) or "(none)",
                            conversation=_transcript(rows))
     try:
         answer = ask_json(client, model, prompt, CONSOLIDATION_FORMAT, notify,

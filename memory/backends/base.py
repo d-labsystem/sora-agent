@@ -195,6 +195,18 @@ class MemoryBackend(ABC):
         return [f"({r['created_at'][:10]}) {r['text']}" if dated else r["text"]
                 for r in self._search("fact", query, top_k)]
 
+    def related_facts(self, queries: list[str], top_k: int = 5) -> list[dict]:
+        """Facts matching any of the queries (id, text, created_at), best of each first,
+        without repeats: what the memory writer must see to notice that a conversation
+        changes something it already knows."""
+        found, seen = [], set()
+        for query in queries:
+            for row in self._search("fact", query, top_k):
+                if row["id"] not in seen:
+                    seen.add(row["id"])
+                    found.append(row)
+        return found
+
     def forget(self, text: str) -> int:
         """Delete facts containing `text` (case-insensitive). Returns how many."""
         needle = tidy(text).lower()
