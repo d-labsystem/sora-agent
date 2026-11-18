@@ -142,6 +142,9 @@ class Settings:
     # Check replies' claimed actions against the turn's record (ops/claims.py). Off: on 35
     # blind-labelled real turns (2026-11-18) it scored 20% precision, 11% recall.
     claim_check: bool = False
+    # Self-learning (memory/learning.py): reflect on turns that went wrong, and put lessons
+    # in later prompts. Off is the control arm of the learning eval (ops/learning_eval.py).
+    learning: bool = True
     port: int = 8765
     embeddings: bool = True                 # search memory by meaning (local model)
     embedding_model: str = DEFAULT_MODEL
@@ -224,6 +227,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         google_calendar=os.getenv("SORA_GOOGLE_CALENDAR", d.google_calendar).strip(),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
         claim_check=_flag("SORA_CLAIM_CHECK", d.claim_check),
+        learning=_flag("SORA_LEARNING", d.learning),
         port=int(os.getenv("SORA_PORT", d.port)),
         embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
         embedding_model=os.getenv("SORA_EMBEDDING_MODEL", d.embedding_model),
@@ -623,10 +627,10 @@ class Sora:
                                                        f"{clock.strftime('%A %d %B %Y, %H:%M %Z').strip()}"}]
                 else:
                     found = recall(self.store, self.small, self.small_id, session_id, message, notify)
-                    lessons = self.lessons.relevant(message)
+                    lessons = self.lessons.relevant(message) if s.learning else []
                     matched = self.skills.match(message)
                     tool_names = [t["name"] for t in self.registry.describe()]
-                    tool_notes = self.lessons.tool_notes(tool_names)
+                    tool_notes = self.lessons.tool_notes(tool_names) if s.learning else {}
                     planning = (long and s.planner in ("long", "always")) or (found.complex and s.planner == "always")
                     system = build_system(self.soul_path.read_text(encoding="utf-8"),
                                           clock, self.skills.catalog(),
@@ -683,7 +687,7 @@ class Sora:
                 if claims and (claims.claims or claims.failed):
                     notify("claims", name="claim check", ok=claims.ok, claims=claims.claims, failed=claims.failed)
                 false_claim = bool(claims and not claims.ok)
-                signals = [] if s.bare else detect(len(result.tool_errors), result.limit_reached, found.correction,
+                signals = [] if s.bare or not s.learning else detect(len(result.tool_errors), result.limit_reached, found.correction,
                                                    false_claim=false_claim)
                 if signals:
                     # Provider-side code runs too: with only local tools, the 2026-11-16 deck

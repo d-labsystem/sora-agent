@@ -89,6 +89,9 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
 
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
 

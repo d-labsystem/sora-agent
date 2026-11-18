@@ -538,6 +538,13 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
     cl.add_argument("action", choices=["sample", "status", "check", "report"])
     cl.add_argument("--seed", type=int, default=0)
     cl.add_argument("--again", action="store_true", help="check: rerun on turns already checked")
+    le = sub.add_parser("learning-eval", help="does sora learn from its mistakes? quirky tools, learning on vs off")
+    le.add_argument("--split", choices=["dev", "test"], default="dev",
+                    help="dev quirks to build with; test quirks run once at the end")
+    le.add_argument("--repeats", type=int, default=3, help="runs per arm, each with its own task order")
+    le.add_argument("--tasks", type=int, default=10, help="tasks per quirk")
+    le.add_argument("--seed", type=int, default=0)
+    le.add_argument("--out", type=Path, help="save every task's result as JSON")
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
@@ -586,6 +593,11 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "claims":
         return claims_command(args, out)
+
+    if command == "learning-eval":       # model calls: costs a little
+        from ops import learning_eval
+        keep_awake()
+        return learning_eval.main(args.split, args.repeats, args.tasks, args.seed, args.out, out)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings
