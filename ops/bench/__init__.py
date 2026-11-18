@@ -108,4 +108,5 @@ def rejudge(tracer, grader, grader_model: str, run_id: str, judge: str, home, pa
            "results": results, "started_at": started, "ended_at": now_iso()}
     tracer.save_eval_run(new)
     changed = sum(a["passed"] != b["passed"] for a, b in zip(run["results"], results))
-    return {**new, "was": run["passed"], "changed": changed}
+    grading = sum((r.get("judge") or {}).get("cost_usd") or 0.0 for r in results if r is not None)
+    return {**new, "was": run["passed"], "changed": changed, "grading_cost_usd": grading}

@@ -516,8 +516,9 @@ def judge_command(args, out: IO[str]) -> int:
             except (KeyError, ValueError) as exc:
                 out.write(f"{exc.args[0]}\n")
                 return 1
+            cost = f", grading ${new['grading_cost_usd']:.3f}" if new.get("grading_cost_usd") else ""
             out.write(f"{run_id} → {new['id']}: {new['was']}/{new['cases']} → {new['passed']}/{new['cases']} "
-                      f"({new['changed']} verdicts changed)  {new['dataset']}\n")
+                      f"({new['changed']} verdicts changed{cost})  {new['dataset']}\n")
             out.flush()
         return 0
     if args.action == "sample":

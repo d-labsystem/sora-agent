@@ -80,6 +80,7 @@ JUDGES = {
                "single-session-preference": RULES["single-session-preference"] + V2_UNSEEN,   # a rubric: no single answer
                "abstention": V2_ABSTENTION, "": GENERIC + V2_UNSEEN + V2_COMMIT},
 }
+OFFICIAL = "lme-official"  # the paper's own script and GPT-4o, verbatim (ops/bench/lme_official.py)
 JUDGE = "lme-v1"          # the paper's protocol; see JUDGES for the validated alternative
 
 GRADE = """{rule}
@@ -174,8 +175,8 @@ class LongMemEval:
     full_context = False                           # the history goes into the prompt; no memory system
 
     def __init__(self, grader, grader_model: str, judge: str = JUDGE):
-        if judge not in JUDGES:
-            raise ValueError(f"unknown judge {judge!r}; one of {', '.join(JUDGES)}")
+        if judge not in JUDGES and judge != OFFICIAL:
+            raise ValueError(f"unknown judge {judge!r}; one of {', '.join([*JUDGES, OFFICIAL])}")
         self.grader, self.grader_model, self.judge = grader, grader_model, judge
         self.rows: dict[str, dict] = {}
 
@@ -212,6 +213,8 @@ class LongMemEval:
             item.meta.get("type", ""), "Correct answer")
 
     def grade(self, item: Item, turn: dict) -> dict:
+        if self.judge == OFFICIAL:
+            return self._grade_official(item, turn)
         kind = item.meta["type"]
         rules = JUDGES[self.judge]
         prompt = GRADE.format(rule=rules.get(kind, rules.get("", GENERIC)), question=item.question,
@@ -223,3 +226,18 @@ class LongMemEval:
                 "judge": {"score": 1.0 if ok else 0.0, "grade": 5 if ok else 1,
                           "reason": f"{kind}: {verdict['reason']}", "extracted": (turn.get("reply") or "")[:80],
                           "version": self.judge}}
+
+    def _grade_official(self, item: Item, turn: dict) -> dict:
+        """GPT-4o with the paper's prompts, on the dataset's own question type and answer
+        (its abstention rule: '_abs' in the id), the reply in full."""
+        from ops.bench import lme_official
+        row = self.rows[item.id]
+        verdict = lme_official.grade(item.id, row["question_type"], row["question"], row["answer"],
+                                     turn.get("reply") or "")
+        ok = verdict["correct"]
+        return {"checks": {"correct": ok},
+                "judge": {"score": 1.0 if ok else 0.0, "grade": 5 if ok else 1,
+                          "reason": f"{row['question_type']}: GPT-4o said {verdict['said']!r}",
+                          "extracted": (turn.get("reply") or "")[:80], "version": OFFICIAL,
+                          "model": lme_official.MODEL, "source": lme_official.SOURCE,
+                          "cost_usd": verdict["cost_usd"]}}

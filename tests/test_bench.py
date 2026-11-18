@@ -312,3 +312,33 @@ def test_rejudge_grades_saved_replies_again_and_links_back(tmp_path, monkeypatch
     assert saved["results"][2]["error"] == "timeout" and saved["cost_usd"] == 0.02
     with pytest.raises(KeyError):
         rejudge(tracer, grader, "haiku", "nope", "lme-v2", tmp_path)
+
+
+def test_the_official_judge_asks_gpt4o_exactly_as_the_papers_script(monkeypatch):
+    """lme-official: the paper's prompts and call, so scores sit beside published ones."""
+    from types import SimpleNamespace
+    from ops.bench import lme_official
+    from ops.bench.longmemeval import LongMemEval
+    sent = []
+
+    class Completions:
+        def create(self, **kw):
+            sent.append(kw)
+            said = "Yes." if "Model Response: the answer is 42" in kw["messages"][0]["content"] else "No"
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=f" {said} "))],
+                                   usage=SimpleNamespace(prompt_tokens=400, completion_tokens=1))
+    monkeypatch.setattr(lme_official, "_client", SimpleNamespace(chat=SimpleNamespace(completions=Completions())))
+    bench = LongMemEval(None, "unused", judge="lme-official")
+    bench.rows = {"q1": {"question_type": "temporal-reasoning", "question": "How many days?", "answer": 42},
+                  "q2_abs": {"question_type": "multi-session", "question": "How many fish?", "answer": "No 30-gallon tank."}}
+    item = lambda qid: runner.Item(qid, "?", "?", {"type": "x"})
+    got = bench.grade(item("q1"), {"reply": "the answer is 42"})
+    assert got["checks"] == {"correct": True} and got["judge"]["version"] == "lme-official"
+    assert got["judge"]["model"] == "gpt-4o-2024-08-06" and got["judge"]["cost_usd"] == pytest.approx(0.00101)
+    assert {k: v for k, v in sent[0].items() if k != "messages"} == {
+        "model": "gpt-4o-2024-08-06", "n": 1, "temperature": 0, "max_tokens": 10}
+    prompt = sent[0]["messages"][0]["content"]
+    assert prompt == lme_official.get_anscheck_prompt("temporal-reasoning", "How many days?", 42, "the answer is 42")
+    assert "off-by-one" in prompt and prompt.endswith("Answer yes or no only.")
+    assert not bench.grade(item("q2_abs"), {"reply": "You have 5 fish."})["checks"]["correct"]
+    assert sent[1]["messages"][0]["content"].startswith("I will give you an unanswerable question")
