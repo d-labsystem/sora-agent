@@ -18,6 +18,7 @@ async function api(path, options = {}) {
   if (init.body !== undefined) { init.headers = { "Content-Type": "application/json" }; init.body = JSON.stringify(init.body); }
   const res = await fetch(path, init);
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { location.href = "/"; throw new Error("log in first"); }   // session ended
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
@@ -569,3 +570,12 @@ window.addEventListener("hashchange", () => {
   const tab = location.hash.slice(1);
   if (tab in loaders && !document.getElementById(tab).classList.contains("active")) showTab(tab);
 });
+
+// ---------- who's logged in (only shown when logins are on: SORA_AUTH)
+(async () => {
+  let me;
+  try { me = await api("/api/me"); } catch { return; }
+  if (!me.auth) return;
+  const out = el("button", { class: "link", onclick: async () => { await api("/api/logout", { method: "POST", body: {} }).catch(() => {}); location.href = "/"; } }, "Log out");
+  $("header.top").append(el("span", { class: "user muted small" }, `${me.name}${me.admin ? " (admin)" : ""} · `, out));
+})();

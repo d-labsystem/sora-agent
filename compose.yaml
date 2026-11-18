@@ -18,6 +18,11 @@ services:
       SORA_HOME: /data
       SORA_MODELS_DIR: /data/models   # the embedding model, downloaded once into the volume
       SORA_BIND: 0.0.0.0
+      # sora refuses to listen beyond localhost without logins; this says the port below is
+      # published on the host's 127.0.0.1 only. It is tied to that "127.0.0.1:" in ports:
+      # publishing on all interfaces ("8770:8765") without SORA_AUTH=1 would put an
+      # unprotected sora on the network. With SORA_AUTH=1 (and users) it isn't needed.
+      SORA_ALLOW_UNAUTHENTICATED_BIND: "1"
       SORA_PORT: "8765"
       SORA_SANDBOX: "off"
       SORA_NOTES: "0"

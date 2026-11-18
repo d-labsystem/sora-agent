@@ -151,6 +151,17 @@ class Settings:
     # publishes the port on the host's 127.0.0.1 only. There's no login yet (roadmap: auth),
     # so nothing should be reachable from the network.
     bind: str = "127.0.0.1"
+    # Multi-user (ops/auth.py): logins, and one sora home per user under <home>/users/.
+    auth: bool = False
+    allowed_hosts: str = ""                 # comma-separated hostnames the server answers to, besides localhost
+    public_url: str = ""                    # e.g. https://sora.example.com: https makes cookies Secure
+    user_daily_usd: float = 2.0             # with auth on: what each user's turns may spend per UTC day (0 = no cap)
+    user_mcp: bool = True                   # read <home>/mcp.json (with auth on it's off: it starts programs)
+    whatsapp_user: str = ""                 # with auth on: whose sora WhatsApp talks to ("" = WhatsApp off)
+    trusted_proxies: str = ""               # comma-separated proxy IPs whose X-Forwarded-For is believed (login throttling)
+    # Listening beyond this computer without logins is refused, unless this says the
+    # port is only published on the host's 127.0.0.1 (compose.yaml).
+    allow_unauthenticated_bind: bool = False
     embeddings: bool = True                 # search memory by meaning (local model)
     embedding_model: str = DEFAULT_MODEL
     memory_min_similarity: float = 0.45
@@ -235,6 +246,14 @@ def load_settings(home: Path | str | None = None) -> Settings:
         learning=_flag("SORA_LEARNING", d.learning),
         port=int(os.getenv("SORA_PORT", d.port)),
         bind=os.getenv("SORA_BIND", d.bind),
+        auth=_flag("SORA_AUTH", d.auth),
+        allowed_hosts=os.getenv("SORA_ALLOWED_HOSTS", d.allowed_hosts),
+        public_url=os.getenv("SORA_PUBLIC_URL", d.public_url).strip(),
+        user_daily_usd=float(os.getenv("SORA_USER_DAILY_USD", d.user_daily_usd)),
+        user_mcp=_flag("SORA_USER_MCP", d.user_mcp),
+        whatsapp_user=os.getenv("SORA_WHATSAPP_USER", d.whatsapp_user).strip(),
+        trusted_proxies=os.getenv("SORA_TRUSTED_PROXIES", d.trusted_proxies),
+        allow_unauthenticated_bind=_flag("SORA_ALLOW_UNAUTHENTICATED_BIND", d.allow_unauthenticated_bind),
         embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
         embedding_model=os.getenv("SORA_EMBEDDING_MODEL", d.embedding_model),
         memory_min_similarity=float(os.getenv("SORA_MEMORY_MIN_SIMILARITY", d.memory_min_similarity)),
@@ -563,7 +582,7 @@ class Sora:
     def _start_mcp(self) -> None:
         home = self.settings.home
         try:
-            config = load_config(home / "mcp.json", home)
+            config = load_config(home / "mcp.json", home) if self.settings.user_mcp else {}
         except (ValueError, OSError) as exc:
             log.error("ignoring mcp.json: %s", exc)
             config = {}
@@ -747,7 +766,7 @@ class Sora:
             with self.lock:
                 lessons = reflect(self.lessons, self.small, self.small_id,
                                   ["thumbs_down"], t["message"], t["reply"] or "", calls,
-                                  turn_id, note=note)
+                                  turn_id, note=note, notify=self._charged(f"reflection on {turn_id}"))
         return {"turn_id": turn_id, "feedback": value, "lessons": lessons}
 
     def _judge(self, turn_id: str, message: str, reply: str, notify=None) -> dict:
@@ -759,11 +778,19 @@ class Sora:
         self.tracer.set_judge(turn_id, verdict["score"], verdict["reason"])
         return verdict
 
+    def _charged(self, what: str):
+        """A notify for model calls made outside a turn: their cost goes on the spend
+        ledger, so the daily cap sees it (a judge or 👎 loop can't spend for free)."""
+        def notify(kind, **data):
+            if kind == "llm":
+                self.tracer.add_spend(data.get("cost_usd") or 0.0, what)
+        return notify
+
     def judge_turn(self, turn_id: str) -> dict:
         t = self.tracer.turn(turn_id)
         if not t:
             raise KeyError(f"no turn {turn_id}")
-        return self._judge(turn_id, t["message"], t["reply"] or "")
+        return self._judge(turn_id, t["message"], t["reply"] or "", self._charged(f"judge {turn_id}"))
 
     def add_to_evals(self, turn_id: str, dataset: str = "mine.jsonl") -> dict:
         t = self.tracer.turn(turn_id)

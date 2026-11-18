@@ -41,6 +41,9 @@ from pathlib import Path
 from typing import IO, Any
 
 SCHEMA = """
+-- What was spent, kept apart from the turns: deleting a turn mustn't give its money back
+-- to a user's daily cap (harness/web.py).
+CREATE TABLE IF NOT EXISTS spend (at TEXT NOT NULL, usd REAL NOT NULL, what TEXT);
 CREATE TABLE IF NOT EXISTS turns (
     id TEXT PRIMARY KEY,
     session_id TEXT,
@@ -181,6 +184,8 @@ class Turn:
                  json.dumps(checks) if checks is not None else None,
                  llm["i"], llm["o"], llm["cr"], llm["cw"], llm["w"], round(llm["c"], 6), tools["n"], tools["bad"],
                  self.elapsed_ms(), now_iso(), self.id))
+            if llm["c"]:
+                t.conn.execute("INSERT INTO spend VALUES (?, ?, ?)", (now_iso(), llm["c"], f"turn {self.id}"))
             t.conn.commit()
         finished = t.turn(self.id)
         if t.sink is not None:          # e.g. OpenTelemetry export (ops/otel.py)
@@ -358,6 +363,20 @@ class Tracer:
             (run["id"], run["dataset"], run["model"], run["cases"], run["passed"],
              run["cost_usd"], json.dumps(run["results"], ensure_ascii=False),
              run["started_at"], run["ended_at"]))
+
+    def add_spend(self, usd: float, what: str) -> None:
+        """Money spent outside a turn (judging, reflecting on a 👎)."""
+        if usd:
+            with self.lock:
+                self.conn.execute("INSERT INTO spend VALUES (?, ?, ?)", (now_iso(), usd, what))
+                self.conn.commit()
+
+    def spent_since(self, since: str) -> float:
+        """Dollars spent since an ISO time, turns and everything else, deleted turns
+        included (the daily cap per user)."""
+        with self.lock:
+            row = self.conn.execute("SELECT COALESCE(SUM(usd), 0) AS c FROM spend WHERE at >= ?", (since,)).fetchone()
+        return float(row["c"])
 
     def eval_runs(self, limit: int = 50) -> list[dict]:
         with self.lock:

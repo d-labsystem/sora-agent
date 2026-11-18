@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sora · log in</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page">
+  <form id="login" class="login-box" autocomplete="on">
+    <div class="brand"><span class="dot"></span>sora</div>
+    <label>Name <input name="name" autocomplete="username" required autofocus></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">Log in</button>
+    <p id="error" class="bad small" role="alert"></p>
+    <p class="muted small">No account? Ask whoever runs this sora to add you (<code>sora users add</code>).</p>
+  </form>
+  <script src="/static/login.js"></script>
+</body>
+</html>

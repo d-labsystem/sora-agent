@@ -47,10 +47,15 @@ jobs:
         run: docker build -t sora:ci .
       - name: Start it and check the dashboard answers
         run: |
-          docker run -d --name sora -p 127.0.0.1:8770:8765 sora:ci
+          docker run -d --name sora -p 127.0.0.1:8770:8765 -e SORA_ALLOW_UNAUTHENTICATED_BIND=1 sora:ci
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8770/api/status -o status.json && break; sleep 2; done
+          curl -sf http://127.0.0.1:8770/healthz
           docker logs sora 2>&1 | tail -20
           python3 -c "import json; s=json.load(open('status.json')); assert s['tools'], s; print('ok:', s['model'], len(s['tools']), 'tools')"
+      - name: Without logins, it refuses to listen beyond localhost
+        run: |
+          docker run --rm sora:ci 2>&1 | tee refused.txt || true
+          grep -q "refusing to listen" refused.txt
       - name: Nothing secret in the image
         run: |
           ! docker run --rm sora:ci sh -c 'ls -a /app' | grep -E '^\.env$|^\.git$'

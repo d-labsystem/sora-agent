@@ -418,6 +418,62 @@ def keep_awake() -> None:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def users_command(args, out: IO[str], ask_password=None) -> int:
+    """sora users add NAME [--admin] [--from DIR] | list | passwd NAME | remove NAME  (ops/auth.py)
+
+    Passwords are typed at a hidden prompt, twice; never an argument or an env var."""
+    import getpass
+    import shutil
+    from harness.app import load_settings
+    from ops.auth import Auth
+    settings = load_settings(args.home)
+    auth = Auth(settings.home)
+    ask = ask_password or getpass.getpass
+
+    def new_password() -> str:
+        first = ask(f"password for {args.name}: ")
+        if first != ask("again: "):
+            raise ValueError("the two passwords don't match")
+        return first
+
+    try:
+        if args.action == "list":
+            for u in auth.users():
+                out.write(f"{u['name']}{'  (admin)' if u['admin'] else ''}  {auth.home(u['name'])}\n")
+            if not auth.users():
+                out.write("no users yet: sora users add NAME --admin\n")
+        elif not args.name:
+            raise ValueError(f"give a name: sora users {args.action} NAME")
+        elif args.action == "add":
+            auth.check_name(args.name)
+            source = Path(args.copy_from).expanduser().resolve() if args.copy_from else None
+            if source and not (source / "memory.db").is_file():
+                raise ValueError(f"{source} doesn't look like a sora home (no memory.db)")
+            if auth.home(args.name).exists() and any(auth.home(args.name).iterdir()) and not args.reuse:
+                raise ValueError(f"{auth.home(args.name)} already has data (from a removed account?). "
+                                 "Use another name, or --reuse to give this person that data")
+            home = auth.add_user(args.name, new_password(), admin=args.admin)
+            if source:
+                # A copy: the original home is never changed. Keys stay out (.env).
+                shutil.copytree(source, home, dirs_exist_ok=True, symlinks=True,
+                                ignore=shutil.ignore_patterns(".env", "users", "auth.db", "logs",
+                                                              "google_token.json"))
+                out.write(f"copied {source} into {home}\n")
+            out.write(f"added {args.name}{' (admin)' if args.admin else ''}; their sora lives in {home}\n")
+        elif args.action == "passwd":
+            auth.set_password(args.name, new_password())
+            out.write(f"changed {args.name}'s password; their other sessions are logged out\n")
+        elif args.action == "remove":
+            home = auth.remove_user(args.name)
+            out.write(f"removed {args.name}; their data is still in {home} (delete it yourself if you mean to)\n")
+    except (ValueError, KeyError) as exc:
+        out.write(f"error: {exc.args[0]}\n")
+        return 1
+    finally:
+        auth.close()
+    return 0
+
+
 def claims_command(args, out: IO[str]) -> int:
     """sora claims sample | status | check | report  (ops/claim_labels.py)"""
     from harness.app import load_settings
@@ -534,6 +590,13 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
                     help="label set: dev (to tune a judge) or test (to check it); sample defaults to dev")
     jc.add_argument("--judge", default=None,
                     help="rejudge: the judge version to grade with; report: compare against that judge's re-grade")
+    us = sub.add_parser("users", help="accounts for multi-user sora (SORA_AUTH=1): add, list, passwd, remove")
+    us.add_argument("action", choices=["add", "list", "passwd", "remove"])
+    us.add_argument("name", nargs="?", default="")
+    us.add_argument("--admin", action="store_true", help="add: may run evals (they spend the shared keys)")
+    us.add_argument("--reuse", action="store_true", help="add: give the new account a removed account's data folder")
+    us.add_argument("--from", dest="copy_from", default="",
+                    help="add: copy an existing sora home (e.g. ~/.sora) into the new account; the original is left as it is")
     cl = sub.add_parser("claims", help="check the claim checker: you label real turns blind, it's measured against you")
     cl.add_argument("action", choices=["sample", "status", "check", "report"])
     cl.add_argument("--seed", type=int, default=0)
@@ -593,6 +656,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "claims":
         return claims_command(args, out)
+
+    if command == "users":
+        return users_command(args, out)
 
     if command == "learning-eval":       # model calls: costs a little
         from ops import learning_eval

@@ -263,3 +263,11 @@ kbd { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1p
 #run-detail textarea { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
 .label-text.reply { white-space: normal; } .label-text.reply p { margin: 0 0 6px; }
 #run-detail pre.report { white-space: pre; overflow-x: auto; }
+
+/* login (SORA_AUTH on) */
+.login-page { display: grid; place-items: center; min-height: 100vh; }
+.login-box { display: flex; flex-direction: column; gap: 12px; width: min(340px, calc(100vw - 32px));
+  padding: 24px; border: 1px solid var(--line, #ddd); border-radius: 10px; background: var(--panel, #fff); }
+.login-box label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.login-box input { padding: 8px 10px; font: inherit; }
+header.top .user { margin-left: 12px; white-space: nowrap; }
