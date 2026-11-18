@@ -1,0 +1,21 @@
+# Nothing secret or personal goes into the image: keys come from .env at run time,
+# data lives in the /data volume.
+.env
+.env.*
+!.env.example
+.git
+.github
+.venv
+.claude
+.idea
+.jbeval
+.pytest_cache
+**/__pycache__
+**/*.pyc
+.DS_Store
+tests
+sandbox
+*.db
+*.sqlite
+.gitleaks.toml
+.gitleaksignore

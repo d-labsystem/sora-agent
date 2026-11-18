@@ -1,0 +1,47 @@
+# sora in Docker:   docker compose up -d --build   then open http://127.0.0.1:8770
+# Logs: docker compose logs -f sora      Stop: docker compose down (the data volume stays)
+#
+# Reachable from this computer only: the port is published on 127.0.0.1, never the
+# network, because sora has no login yet (roadmap: multi-user auth). 8770, not 8765,
+# so it can run beside `main.py serve`.
+
+services:
+  sora:
+    build: .
+    image: sora:local
+    env_file:
+      - path: .env               # your keys and settings, read when the container starts
+        required: false
+    environment:
+      # These win over .env: inside the container the paths, address and Mac-only
+      # tools are fixed (a SORA_HOME=~/.sora in .env would point at nothing here).
+      SORA_HOME: /data
+      SORA_MODELS_DIR: /data/models   # the embedding model, downloaded once into the volume
+      SORA_BIND: 0.0.0.0
+      SORA_PORT: "8765"
+      SORA_SANDBOX: "off"
+      SORA_NOTES: "0"
+      SORA_CALENDAR: "0"
+      SORA_BROWSER: "0"
+      # Phoenix on this Mac is host.docker.internal:6006 from inside; off unless set.
+      SORA_PHOENIX_ENDPOINT: ${SORA_DOCKER_PHOENIX_ENDPOINT:-}
+    ports:
+      - "127.0.0.1:${SORA_DOCKER_PORT:-8770}:8765"
+    volumes:
+      - sora-data:/data
+    restart: unless-stopped
+
+  # Optional: Postgres with pgvector for SORA_MEMORY_BACKEND=pgvector.
+  #   docker compose --profile pg up -d
+  # and set SORA_DATABASE_URL=postgresql://postgres:sora@postgres:5432/postgres in .env
+  postgres:
+    image: pgvector/pgvector:pg17
+    profiles: ["pg"]
+    environment:
+      POSTGRES_PASSWORD: sora
+    volumes:
+      - sora-pg:/var/lib/postgresql/data
+
+volumes:
+  sora-data:
+  sora-pg:

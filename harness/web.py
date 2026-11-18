@@ -22,7 +22,8 @@ and there's nothing to install. The page is static HTML + JS (harness/static).
                                     "memory" | "evals"} whenever that data changes
 
 Security. The server listens on 127.0.0.1 only, so other machines can't reach
-it. Two more checks stop *websites* you visit from using it through your own
+it (SORA_BIND changes the address for a container, which then publishes the port
+on the host's 127.0.0.1 only: see compose.yaml). Two more checks stop *websites* you visit from using it through your own
 browser: the Host header must be localhost (blocks DNS rebinding), and any
 Origin must be localhost (blocks cross-site requests). POSTs must be JSON,
 which a plain HTML form on another site can't send without an Origin.
@@ -407,7 +408,7 @@ def make_handler(dash: Dashboard):
 
 def make_server(agent: Sora, port: int, watch_interval: float = 1.0) -> ThreadingHTTPServer:
     dashboard = Dashboard(agent, watch_interval)
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(dashboard))
+    server = ThreadingHTTPServer((agent.settings.bind, port), make_handler(dashboard))
     server.daemon_threads = True
     server.dashboard = dashboard          # so whoever stops the server can stop the watcher
     return server

@@ -462,8 +462,8 @@ def start(agent, settings) -> tuple[ThreadingHTTPServer, Gateway] | None:
         log.error("WhatsApp off: set SORA_WHATSAPP_ALLOWED to your number (e.g. +919800000000)")
         return None
     gateway = Gateway(agent, provider, settings.whatsapp_allowed.split(","), settings.home / "whatsapp_sessions.json")
-    # 127.0.0.1: the tunnel connects from this Mac; nothing else on the network can.
-    server = ThreadingHTTPServer(("127.0.0.1", settings.whatsapp_port), make_handler(gateway, settings.whatsapp_public_url))
+    # 127.0.0.1 (SORA_BIND): the tunnel connects from this Mac; nothing else on the network can.
+    server = ThreadingHTTPServer((settings.bind, settings.whatsapp_port), make_handler(gateway, settings.whatsapp_public_url))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="whatsapp-server", daemon=True).start()
     return server, gateway

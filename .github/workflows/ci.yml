@@ -1,6 +1,7 @@
-# CI: on every push and pull request, run the tests on a clean Linux machine and
-# scan the history for secrets. Needs no API keys: tests that need a model, Docker,
-# Chrome or macOS skip themselves (see the skipif markers in tests/).
+# CI: on every push and pull request, run the tests on a clean Linux machine, build
+# the Docker image and check it starts, and scan the history for secrets. Needs no
+# API keys: tests that need a model, Docker, Chrome or macOS skip themselves (see the
+# skipif markers in tests/).
 name: ci
 
 on:
@@ -36,6 +37,23 @@ jobs:
         run: uv sync --frozen --extra providers --extra otel --extra bench --extra memory-pg --extra memory-langmem
       - name: Tests
         run: uv run --frozen pytest -q -rs
+
+  docker:                             # the image builds, starts with no keys, and the dashboard answers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t sora:ci .
+      - name: Start it and check the dashboard answers
+        run: |
+          docker run -d --name sora -p 127.0.0.1:8770:8765 sora:ci
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8770/api/status -o status.json && break; sleep 2; done
+          docker logs sora 2>&1 | tail -20
+          python3 -c "import json; s=json.load(open('status.json')); assert s['tools'], s; print('ok:', s['model'], len(s['tools']), 'tools')"
+      - name: Nothing secret in the image
+        run: |
+          ! docker run --rm sora:ci sh -c 'ls -a /app' | grep -E '^\.env$|^\.git$'
 
   secrets:
     runs-on: ubuntu-24.04

@@ -184,3 +184,17 @@ def test_event_stream_respects_origin(server):
     with pytest.raises(HTTPError) as err:
         call(base, "/api/events", headers={"Origin": "https://evil.com"})
     assert err.value.code == 403
+
+
+def test_the_bind_address_is_a_setting_and_defaults_to_this_computer(tmp_path, monkeypatch):
+    """A container sets SORA_BIND=0.0.0.0 and publishes the port on the host's 127.0.0.1 only."""
+    from harness.app import load_settings
+    assert load_settings(tmp_path).bind == "127.0.0.1"
+    monkeypatch.setenv("SORA_BIND", "0.0.0.0")
+    settings = load_settings(tmp_path)
+    assert settings.bind == "0.0.0.0"
+    agent = Sora(Settings(home=tmp_path, bind="127.0.0.1"), FakeClient([]), connect_mcp=False)
+    srv = make_server(agent, 0)
+    assert srv.server_address[0] == "127.0.0.1"
+    srv.dashboard.close()
+    srv.server_close()

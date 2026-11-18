@@ -146,6 +146,11 @@ class Settings:
     # in later prompts. Off is the control arm of the learning eval (ops/learning_eval.py).
     learning: bool = True
     port: int = 8765
+    # The address the dashboard (and WhatsApp webhook) listen on. 127.0.0.1: only this
+    # computer. A container sets 0.0.0.0 so Docker can forward to it; compose.yaml then
+    # publishes the port on the host's 127.0.0.1 only. There's no login yet (roadmap: auth),
+    # so nothing should be reachable from the network.
+    bind: str = "127.0.0.1"
     embeddings: bool = True                 # search memory by meaning (local model)
     embedding_model: str = DEFAULT_MODEL
     memory_min_similarity: float = 0.45
@@ -229,6 +234,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
         claim_check=_flag("SORA_CLAIM_CHECK", d.claim_check),
         learning=_flag("SORA_LEARNING", d.learning),
         port=int(os.getenv("SORA_PORT", d.port)),
+        bind=os.getenv("SORA_BIND", d.bind),
         embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
         embedding_model=os.getenv("SORA_EMBEDDING_MODEL", d.embedding_model),
         memory_min_similarity=float(os.getenv("SORA_MEMORY_MIN_SIMILARITY", d.memory_min_similarity)),
