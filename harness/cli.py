@@ -418,6 +418,28 @@ def keep_awake() -> None:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def claims_command(args, out: IO[str]) -> int:
+    """sora claims sample | status | check | report  (ops/claim_labels.py)"""
+    from harness.app import load_settings
+    from ops.claim_labels import ClaimLabels, format_report
+    from ops.tracing import Tracer
+    settings = load_settings(args.home)
+    labels = ClaimLabels(Tracer(settings.home / "traces.db"))
+    if args.action == "sample":
+        out.write(f"added {labels.sample(args.seed)} turns to label (Evals → Claim check)\n")
+    elif args.action == "check":           # small-model calls: costs a little, so only on request
+        from loop.providers import Providers
+        client, model = Providers(None).get(settings.small_model)
+        out.write(f"checked {labels.check(client, model, settings.home / 'workspace', again=args.again)} "
+                  f"labelled turns with {model}\n")
+    elif args.action == "status":
+        p = labels.progress()
+        out.write(f"{p['done']}/{p['total']} labelled ({p['unsure']} unsure)\n")
+    else:
+        out.write(format_report(labels.report()) + "\n")
+    return 0
+
+
 def judge_command(args, out: IO[str]) -> int:
     from harness.app import load_settings
     from ops.judge_check import JudgeCheck, benchmark_references, format_report
@@ -512,6 +534,10 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
                     help="label set: dev (to tune a judge) or test (to check it); sample defaults to dev")
     jc.add_argument("--judge", default=None,
                     help="rejudge: the judge version to grade with; report: compare against that judge's re-grade")
+    cl = sub.add_parser("claims", help="check the claim checker: you label real turns blind, it's measured against you")
+    cl.add_argument("action", choices=["sample", "status", "check", "report"])
+    cl.add_argument("--seed", type=int, default=0)
+    cl.add_argument("--again", action="store_true", help="check: rerun on turns already checked")
     ex = sub.add_parser("export", help="export traces as JSONL")
     ex.add_argument("-o", "--output", type=Path)
     ex.add_argument("--source", choices=["chat", "cli", "eval"])
@@ -557,6 +583,9 @@ def main(argv: list[str] | None = None, create=None, out: IO[str] = sys.stdout,
 
     if command == "judge":      # reads runs and labels in traces.db; no model calls
         return judge_command(args, out)
+
+    if command == "claims":
+        return claims_command(args, out)
 
     if command == "export":     # needs only the traces, not the agent
         from harness.app import load_settings

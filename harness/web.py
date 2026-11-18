@@ -8,6 +8,7 @@ and there's nothing to install. The page is static HTML + JS (harness/static).
     GET  /api/sessions[/<id>]       conversations, and one conversation's messages
     POST /api/feedback              {turn_id, value: 1|-1|0, note}
     POST /api/judge | /api/to-eval  {turn_id}
+    GET  /api/claim-check[?id=N] | /api/claim-check/report;  POST /api/claim-check {id, human, note}
     GET  /api/turns[/<id>]          traces (filters: source, status, limit, offset)
     GET  /api/stats                 headline numbers (days, source)
     GET  /api/export                all turns as JSONL
@@ -50,6 +51,7 @@ from memory import mirror
 from memory.backends import open_memory
 from ops.evals import load_cases, run_eval
 from ops.judge_check import JudgeCheck, format_report
+from ops import claim_labels
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -81,6 +83,7 @@ class Dashboard:
             mirror.attach(self.memory, agent.settings.home / "MEMORY.md")
         self.lessons = LessonStore(path)
         self.judge = JudgeCheck(agent.tracer)
+        self.claims = claim_labels.ClaimLabels(agent.tracer)
         self.read_lock = threading.Lock()
         self.eval_lock = threading.Lock()
         self.eval_running: str | None = None
@@ -270,6 +273,12 @@ def make_handler(dash: Dashboard):
                     return self._json({**report, "text": format_report(report)})
                 label_id = int(q["id"]) if q.get("id", "").isdigit() else None
                 return self._json({"progress": dash.judge.progress(), "item": dash.judge.item(label_id)})
+            if name == "claim-check":
+                if rest == ["report"]:
+                    report = dash.claims.report()
+                    return self._json({**report, "text": claim_labels.format_report(report)})
+                label_id = int(q["id"]) if q.get("id", "").isdigit() else None
+                return self._json({"progress": dash.claims.progress(), "item": dash.claims.item(label_id)})
             if name == "evals":
                 if rest:
                     run = tracer.eval_run(rest[0])
@@ -330,6 +339,9 @@ def make_handler(dash: Dashboard):
                 if parts == ["api", "judge-check"]:
                     return self._json(dash.judge.label(int(body.get("id", -1)), str(body.get("human")),
                                                        str(body.get("note") or "")))
+                if parts == ["api", "claim-check"]:
+                    return self._json(dash.claims.label(int(body.get("id", -1)), str(body.get("human")),
+                                                        str(body.get("note") or "")))
                 if parts == ["api", "evals", "run"]:
                     dash.start_eval(str(body.get("dataset")))
                     return self._json({"started": body.get("dataset")}, 202)

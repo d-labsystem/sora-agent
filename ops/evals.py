@@ -119,6 +119,8 @@ def turn_checks(turn: dict) -> dict[str, bool]:
         "no_tool_errors": not turn.get("tool_errors"),
         "within_step_limit": turn.get("status") != "limit",
         "within_budget": turn.get("status") != "budget",
+        # only when the reply claimed an action and the claim check ran (ops/claims.py)
+        **({"claims_supported": turn["claims_ok"]} if turn.get("claims_ok") is not None else {}),
     }
 
 

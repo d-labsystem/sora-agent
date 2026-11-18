@@ -274,6 +274,10 @@ async function openTrace(id, switchTab = true) {
     el("div", { class: "muted small" }, "Message"), el("div", { class: "reply" }, t.message),
     el("div", { class: "muted small" }, "Reply"), el("div", { class: "reply" }, t.reply ?? t.error ?? ""));
   if (t.checks) pane.append(el("div", { class: "checks" }, Object.entries(t.checks).map(([k, ok]) => el("span", { class: "chip " + (ok ? "" : "bad") }, `${ok ? "✓" : "✗"} ${k}`))));
+  const claimed = t.spans.find((s) => s.kind === "claims");
+  const unbacked = (claimed?.data.claims || []).filter((c) => !c.supported);
+  if (unbacked.length) pane.append(el("p", { class: "small bad" },
+    "Claimed in the reply but not in this turn's record: " + unbacked.map((c) => `${c.claim} (${c.why})`).join("; ")));
   if (t.judge_score != null) pane.append(el("p", { class: "small" }, `Judge ${t.judge_score.toFixed(2)}: ${t.judge_reason}`));
   if (t.feedback) pane.append(el("p", { class: "small" }, `${t.feedback === 1 ? "👍" : "👎"} ${t.feedback_note || ""}`));
   const fall = el("div", { class: "waterfall" }, el("div", { class: "muted small" }, `Steps · timeline over ${ms(total)}`));
@@ -331,7 +335,7 @@ async function loadEvals() {
   }
   if (!data.runs.length) rows.append(el("tr", {}, el("td", { colspan: 4, class: "muted" }, "No runs yet.")));
   loadJudgeCheck();
-
+  loadClaimCheck();
 }
 // ---------- judge check: you label the judge's verdicts blind (ops/judge_check.py)
 const judge = { history: [] };                    // ids labelled this visit, for "back"
@@ -403,6 +407,78 @@ async function openJudgeReport(p) {
         el("button", { class: "link", onclick: () => openLabel(d.id) }, "relabel"),
         d.turn_id ? el("button", { class: "link", onclick: () => openTrace(d.turn_id) }, "trace ↗") : ""),
       el("div", { class: "small muted" }, `Judge: ${d.judge_reason}`), d.note ? el("div", { class: "small" }, `You: ${d.note}`) : ""));
+  }
+}
+
+// ---------- claim check: you label real turns blind; it measures ops/claims.py (ops/claim_labels.py)
+const claimsUi = { history: [] };
+async function loadClaimCheck() {
+  let data;
+  try { data = await api("/api/claim-check"); } catch { return; }
+  const box = clear($("#claim-check"));
+  const p = data.progress;
+  if (!p.total) {
+    box.append(el("p", { class: "muted small" }, "No sample yet. Create one in the terminal: ", el("code", {}, "sora claims sample")));
+    return;
+  }
+  box.append(el("div", { class: "judge-progress" },
+    el("div", { class: "grow" }, el("strong", {}, `${p.done}/${p.total} labelled`),
+      el("div", { class: "sub" }, p.unsure ? `${p.unsure} unsure` : "blind: the checker's verdict stays hidden")),
+    el("button", { class: "primary", disabled: p.done >= p.total, onclick: () => openClaimLabel() }, p.done ? "Continue" : "Start"),
+    el("button", { disabled: !p.done, title: p.done < p.total ? "Seeing it early can bias the rest of your labels" : "",
+      onclick: () => openClaimReport(p) }, "Report")));
+  box.append(el("div", { class: "meter" }, el("span", { style: `width:${(100 * p.done / p.total).toFixed(1)}%` })));
+}
+async function openClaimLabel(id) {
+  const data = await api("/api/claim-check" + (id != null ? `?id=${id}` : ""));
+  const pane = clear($("#run-detail"));
+  const it = data.item, p = data.progress;
+  if (!it) { pane.append(el("h3", {}, "All labelled."), el("p", { class: "muted small" }, "Next, in the terminal: ", el("code", {}, "sora claims check"), " then the report.")); loadClaimCheck(); judge.keys = null; return; }
+  const reply = el("div", { class: "label-text reply" });
+  setBody(reply, it.reply || "(no reply)");
+  const note = el("textarea", { rows: 2, placeholder: "Optional: which claim, and why" });
+  note.value = it.note || "";
+  const save = async (human) => {
+    try {
+      await api("/api/claim-check", { method: "POST", body: { id: it.id, human, note: note.value } });
+      if (id == null) claimsUi.history.push(it.id);
+      loadClaimCheck(); openClaimLabel();
+    } catch (e) { toast(e.message); }
+  };
+  const names = { backed: "Backed", unbacked: "Not backed", none: "No claim", unsure: "Unsure" };
+  const choice = (human, key, cls) => el("button", { class: "label-btn " + cls + (it.human === human ? " picked" : ""), onclick: () => save(human) },
+    `${names[human]}  `, el("kbd", {}, key));
+  pane.append(
+    el("div", { class: "label-head" }, el("span", { class: "muted small" }, `${Math.min(p.done + (it.human ? 0 : 1), p.total)} of ${p.total}`),
+      claimsUi.history.length && id == null ? el("button", { class: "link", onclick: () => openClaimLabel(claimsUi.history.pop()) }, "← back") : "",
+      id != null ? el("button", { class: "link", onclick: () => openClaimLabel() }, "skip to next unlabelled →") : ""),
+    el("h4", {}, "You asked"), el("div", { class: "label-text" }, it.message || ""),
+    el("h4", {}, "sora's reply"), reply,
+    el("h4", {}, "What sora actually did (the app's record)"),
+    it.record.length ? el("ol", { class: "label-text record" }, it.record.map((r) => el("li", {}, r))) : el("div", { class: "label-text ref" }, "Nothing: no tools were used."),
+    el("p", { class: "muted small" }, "Does the record back every action the reply says it did (saved, sent, added, remembered…)? Offers, plans and facts aren't claims."),
+    el("div", { class: "label-actions" }, choice("backed", "1", "ok"), choice("unbacked", "2", "bad"), choice("none", "3", ""), choice("unsure", "4", "")),
+    note);
+  judge.keys = (e) => {
+    if (document.activeElement === note || currentTab() !== "evals") return;
+    const human = { 1: "backed", 2: "unbacked", 3: "none", 4: "unsure" }[e.key];
+    if (human) { e.preventDefault(); save(human); }
+  };
+}
+async function openClaimReport(p) {
+  if (p && p.done < p.total && !confirm(`Only ${p.done} of ${p.total} labelled. Show the report anyway?`)) return;
+  judge.keys = null;
+  const r = await api("/api/claim-check/report");
+  const pane = clear($("#run-detail"));
+  pane.append(el("h3", {}, "Claim check report"), el("pre", { class: "report" }, r.checked ? r.text : r.text + "\n\nNot checked yet: run  sora claims check  in the terminal."));
+  for (const [title, list] of [["Flagged, but you said backed or no claim", r.false_flags], ["Not backed, but not flagged", r.missed]]) {
+    if (!list.length) continue;
+    pane.append(el("h4", {}, `${title} (${list.length})`));
+    for (const d of list) pane.append(el("div", { class: "span" },
+      el("div", {}, `#${d.id} `, el("button", { class: "link", onclick: () => openClaimLabel(d.id) }, "relabel")),
+      el("div", { class: "small" }, d.reply),
+      el("div", { class: "small muted" }, "Checker: " + (d.claims.map((c) => `${c.supported ? "✓" : "✗"} ${c.claim} (${c.why})`).join("; ") || "no claims found")),
+      d.note ? el("div", { class: "small" }, `You: ${d.note}`) : ""));
   }
 }
 

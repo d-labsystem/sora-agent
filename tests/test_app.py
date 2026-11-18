@@ -11,11 +11,12 @@ from memory.gate import GateResult
 class SmallModel:
     """Answers the small-model helpers by recognising their prompts."""
 
-    def __init__(self, gate=None, lessons=None, consolidation=None, grade=4):
+    def __init__(self, gate=None, lessons=None, consolidation=None, grade=4, claims=None):
         self.gate = gate or {"retrieve": True, "query": "", "correction": False, "reason": "r"}
         self.lessons = lessons or []
         self.consolidation = consolidation or {"facts": [], "episode": ""}
         self.grade = grade
+        self.claims = claims or []
         self.seen = []
 
     def __call__(self, request):
@@ -23,7 +24,8 @@ class SmallModel:
         for key, answer in (("You decide whether", self.gate),
                             ("review a turn", {"lessons": self.lessons}),
                             ("long-term memory of a personal", self.consolidation),
-                            ("Grade a personal", {"score": self.grade, "reason": "fine"})):
+                            ("Grade a personal", {"score": self.grade, "reason": "fine"}),
+                            ("You check whether a personal assistant did", {"claims": self.claims})):
             if key in prompt:
                 self.seen.append(key)
                 return answer
@@ -168,6 +170,33 @@ def test_current_time_tool_sees_the_turns_date(tmp_path):
     assert seen and "2023" in seen[0]
     agent.respond("and now?")                         # a live turn: back to the real clock
     assert str(datetime.now().year) in seen[-1] and agent.context.now is None
+
+
+def test_a_claimed_action_with_no_record_is_a_false_claim(tmp_path):
+    """The reply says it saved a file; no tool ran. Before: every check passed."""
+    claims = [{"claim": "saved notes.md", "evidence": 0, "why": "no tool was used"}]
+    lesson = {"situation": "saving files", "lesson": "Call write_file before saying a file is saved", "tool": ""}
+    agent, client, small = make(tmp_path, [message(text("I've saved your notes to notes.md."))],
+                                small=SmallModel(claims=claims, lessons=[lesson]), claim_check=True)
+    turn = agent.respond("save my notes")
+    assert turn["checks"]["claims_supported"] is False
+    span = next(s for s in turn["spans"] if s["kind"] == "claims")
+    assert span["ok"] in (False, 0) and span["data"]["claims"][0]["claim"] == "saved notes.md"
+    assert "review a turn" in small.seen
+    review = next(r for r in client.small_requests if "review a turn" in r["messages"][0]["content"])
+    text_ = review["messages"][0]["content"]
+    assert "false_claim" in text_ and "not in the turn's record: saved notes.md" in text_
+    assert agent.lessons.list()[0]["signal"] == "false_claim"
+
+
+def test_no_claim_check_without_action_words_or_when_off(tmp_path):
+    agent, client, small = make(tmp_path, [message(text("Paris is the capital of France."))], claim_check=True)
+    turn = agent.respond("capital of France?")
+    assert "claims_supported" not in turn["checks"]
+    assert "You check whether a personal assistant did" not in small.seen
+    agent, client, small = make(tmp_path / "off", [message(text("I've saved your notes to notes.md."))])
+    turn = agent.respond("save my notes")                      # off by default: no call, no signal
+    assert "claims_supported" not in turn["checks"] and "You check whether a personal assistant did" not in small.seen
 
 
 def test_status_and_system_prompt_order(tmp_path):

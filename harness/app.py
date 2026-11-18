@@ -43,6 +43,7 @@ from loop.agent import run_loop
 from loop.helpers import Helpers
 from loop.providers import ProviderError, Providers, new_anthropic_client, split_model
 from memory.consolidation import consolidate
+from ops.claims import check_claims
 from memory.gate import GateResult, recall
 from memory.embeddings import DEFAULT_MODEL, Embedder
 from memory.learning import LessonStore, detect, reflect
@@ -138,6 +139,9 @@ class Settings:
     bare: bool = False
     google_calendar: str = ""               # "" = on once signed in (google login); "1" / "0" to force
     auto_judge: bool = False                # judge every chat turn (costs a little)
+    # Check replies' claimed actions against the turn's record (ops/claims.py). Off: on 35
+    # blind-labelled real turns (2026-11-18) it scored 20% precision, 11% recall.
+    claim_check: bool = False
     port: int = 8765
     embeddings: bool = True                 # search memory by meaning (local model)
     embedding_model: str = DEFAULT_MODEL
@@ -219,6 +223,7 @@ def load_settings(home: Path | str | None = None) -> Settings:
             os.getenv("SORA_PLANNER", d.planner).strip().lower()),
         google_calendar=os.getenv("SORA_GOOGLE_CALENDAR", d.google_calendar).strip(),
         auto_judge=_flag("SORA_AUTO_JUDGE", d.auto_judge),
+        claim_check=_flag("SORA_CLAIM_CHECK", d.claim_check),
         port=int(os.getenv("SORA_PORT", d.port)),
         embeddings=_flag("SORA_EMBEDDINGS", d.embeddings),
         embedding_model=os.getenv("SORA_EMBEDDING_MODEL", d.embedding_model),
@@ -672,7 +677,14 @@ class Sora:
                 self.store.add_exchange(session_id, message, result.reply, turn.id,
                                         action_note(result.tool_calls, result.server_calls,
                                                     files=result.files), visuals)
-                signals = [] if s.bare else detect(len(result.tool_errors), result.limit_reached, found.correction)
+                claims = None if s.bare or not s.claim_check else check_claims(
+                    self.small, self.small_id, result.reply, result.tool_calls, result.server_calls,
+                    result.files, s.home / "workspace", notify)
+                if claims and (claims.claims or claims.failed):
+                    notify("claims", name="claim check", ok=claims.ok, claims=claims.claims, failed=claims.failed)
+                false_claim = bool(claims and not claims.ok)
+                signals = [] if s.bare else detect(len(result.tool_errors), result.limit_reached, found.correction,
+                                                   false_claim=false_claim)
                 if signals:
                     # Provider-side code runs too: with only local tools, the 2026-11-16 deck
                     # turns were reflected on as "claimed a file without making it" (it had been
@@ -682,7 +694,9 @@ class Sora:
                                    for c in result.server_calls if "output" in c]
                     reflect(self.lessons, self.small, self.small_id, signals, message,
                             result.reply, result.tool_calls + server_code, turn.id,
-                            previous if found.correction else None, notify=notify)
+                            previous if found.correction else None, notify=notify,
+                            detail=("Claimed in the reply but not in the turn's record: "
+                                    + "; ".join(c["claim"] for c in claims.unsupported)) if false_claim else "")
                 if s.bare:
                     pass                                    # the baseline keeps no memory
                 elif s.consolidator == "langmem":
@@ -695,7 +709,8 @@ class Sora:
 
                 # 9. checks and finish
                 checks = turn_checks({"status": status, "reply": result.reply,
-                                      "tool_errors": len(result.tool_errors)})
+                                      "tool_errors": len(result.tool_errors),
+                                      "claims_ok": claims.ok if claims and claims.claims else None})
                 if s.auto_judge and source == "chat":
                     self._judge(turn.id, message, result.reply, notify)
                 return turn.finish(result.reply, status, result.model, result.iterations,

@@ -37,7 +37,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS lessons USING fts5(
     uses UNINDEXED, created_at UNINDEXED, tokenize='porter');
 """
 
-SIGNALS = ("tool_error", "iteration_limit", "user_correction", "thumbs_down")
+SIGNALS = ("tool_error", "iteration_limit", "user_correction", "thumbs_down", "false_claim")
 MAX_LESSONS = 3
 NOTES_PER_TOOL = 3
 TRACE_CHARS = 1500
@@ -79,9 +79,10 @@ Assistant reply:
 
 
 def detect(tool_errors: int = 0, limit_reached: bool = False,
-           correction: bool = False, thumbs_down: bool = False) -> list[str]:
-    """Which learning signals fired for a turn. Empty means: don't reflect."""
-    fired = [tool_errors > 0, limit_reached, correction, thumbs_down]
+           correction: bool = False, thumbs_down: bool = False, false_claim: bool = False) -> list[str]:
+    """Which learning signals fired for a turn. Empty means: don't reflect.
+    false_claim: the reply said it did something the turn's record doesn't show (ops/claims.py)."""
+    fired = [tool_errors > 0, limit_reached, correction, thumbs_down, false_claim]
     return [name for name, on in zip(SIGNALS, fired) if on]
 
 
@@ -150,7 +151,7 @@ class LessonStore:
 
 def reflect(lessons: LessonStore, client, model: str, signals: list[str], message: str,
             reply: str, tool_calls: list[dict], turn_id: str | None = None,
-            previous: dict | None = None, note: str = "", notify=None) -> list[dict]:
+            previous: dict | None = None, note: str = "", notify=None, detail: str = "") -> list[dict]:
     """Ask the small model what to learn from a turn that went wrong.
     Returns the lessons actually saved. Never raises."""
     if not signals:
@@ -158,7 +159,7 @@ def reflect(lessons: LessonStore, client, model: str, signals: list[str], messag
     known = [l["lesson"] for l in lessons.list()[:30]]
     prompt = PROMPT.format(
         signals=", ".join(signals),
-        note=f"User feedback: {note}\n" if note else "",
+        note=(f"User feedback: {note}\n" if note else "") + (f"{detail}\n" if detail else ""),
         max=MAX_LESSONS,
         known="\n".join(f"- {k}" for k in known) or "(none)",
         previous=(f"Previous exchange (the user corrected this reply):\nUser: {previous['user'][:TRACE_CHARS]}\n"
